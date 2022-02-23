@@ -284,7 +284,6 @@ void run ()
 
     if (argument.size() % 2)
       throw Exception ("MSMT_CSD algorithm expects pairs of (input response function & output FOD image) to be provided");
-
     DWI::SDeconv::MSMT_CSD::Shared shared (header_in);
     shared.parse_cmdline_options();
 
@@ -301,7 +300,6 @@ void run ()
     } catch (Exception& e) {
       throw Exception (e, "MSMT_CSD algorithm expects the first file in each argument pair to be an input response function file");
     }
-
     shared.init();
 
     DWI::stash_DW_scheme (header_out, shared.grad);

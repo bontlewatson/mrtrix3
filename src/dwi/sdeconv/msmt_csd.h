@@ -92,10 +92,9 @@ namespace MR
           {
             if (lmax.empty())
             {
-              lmax = lmax_response;
               for (size_t t = 0; t != num_tissues(); ++t)
               {
-                lmax[t] = std::min(uint32_t(DEFAULT_MSMTCSD_LMAX), lmax[t]);
+                lmax.push_back(std::min(DEFAULT_MSMTCSD_LMAX, responses[t].lmax()));
               }
             }
             else
@@ -108,7 +107,6 @@ namespace MR
                   throw Exception("Each value of lmax must be a non-negative even integer");
               }
             }
-
             for (size_t t = 0; t != num_tissues(); ++t)
             {
               // more appropriate test would be to check that the max bval is in the gradient table
