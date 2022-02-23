@@ -160,12 +160,12 @@ namespace MR
               const size_t tissue_n = Math::SH::NforL(tissue_lmax);
               const size_t tissue_nmzero = tissue_lmax / 2 + 1;
 
-              // for (size_t shell_idx = 0; shell_idx < num_shells(); ++shell_idx) {
               // loop over all volumes
               for (size_t vol = 0; vol < C.rows(); ++vol)
               {
                 Eigen::VectorXd response_ = responses[tissue_idx].coeffs(grad(vol, 3));
-                response_ = (response_.array() / DSH.head(tissue_nmzero).array()).matrix();
+                response_.conservativeResize (tissue_nmzero);
+                response_.array() = (response_.array() / DSH.head(tissue_nmzero).array());
                 Eigen::VectorXd fconv(tissue_n);
                 int li = 0;
                 int mi = 0;
