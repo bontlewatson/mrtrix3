@@ -1,39 +1,37 @@
-.. _dwidenoise:
+.. _dwi2noise:
 
-dwidenoise
+dwi2noise
 ===================
 
 Synopsis
 --------
 
-dMRI noise level estimation and denoising using Marchenko-Pastur PCA
+Noise level estimation using Marchenko-Pastur PCA
 
 Usage
 --------
 
 ::
 
-    dwidenoise [ options ]  dwi out
+    dwi2noise [ options ]  dwi noise
 
--  *dwi*: the input diffusion-weighted image.
--  *out*: the output denoised DWI image.
+-  *dwi*: the input diffusion-weighted image
+-  *noise*: the output estimated noise level map
 
 Description
 -----------
 
-DWI data denoising and noise map estimation by exploiting data redundancy in the PCA domain using the prior knowledge that the eigenspectrum of random covariance matrices is described by the universal Marchenko-Pastur (MP) distribution. Fitting the MP distribution to the spectrum of patch-wise signal matrices hence provides an estimator of the noise level 'sigma'; this noise level estimate then determines the optimal cut-off for PCA denoising.
+DWI data noise map estimation by exploiting data redundancy in the PCA domain using the prior knowledge that the eigenspectrum of random covariance matrices is described by the universal Marchenko-Pastur (MP) distribution. Fitting the MP distribution to the spectrum of patch-wise signal matrices hence provides an estimator of the noise level 'sigma'.
 
-Important note: image denoising must be performed as the first step of the image processing pipeline. The routine will fail if interpolation or smoothing has been applied to the data prior to denoising.
+Unlike the MRtrix3 command dwidenoise, this command does not generate a denoised version of the input image series; its primary output is instead a map of the estimated noise level. While this can also be obtained from the dwidenoise command using option -noise_out, using instead the dwi2noise command gives the ability to obtain a noise map to which filtering can be applied, which can then be utilised for the actual image series denoising, without generating an unwanted intermiedate denoised image series.
 
-Note that this function does not correct for non-Gaussian noise biases present in magnitude-reconstructed MRI images. If available, including the MRI phase data can reduce such non-Gaussian biases, and the command now supports complex input data.
+Important note: noise level estimation should only be performed as the first step of an image processing pipeline. The routine is invalid if interpolation or smoothing has been applied to the data prior to denoising.
+
+Note that on complex input data, the output will be the total noise level across real and imaginary channels, so a scale factor sqrt(2) applies.
 
 The sliding spatial window behaves differently at the edges of the image FoV depending on the shape / size selected for that window. The default behaviour is to use a spherical kernel centred at the voxel of interest, whose size is some multiple of the number of input volumes; where some such voxels lie outside of the image FoV, the radius of the kernel will be increased until the requisite number of voxels are used. For a spherical kernel of a fixed radius, no such expansion will occur, and so for voxels near the image edge a reduced number of voxels will be present in the kernel. For a cuboid kernel, the centre of the kernel will be offset from the voxel being processed such that the entire volume of the kernel resides within the image FoV.
 
 The size of the default spherical kernel is set to select a number of voxels that is 1.0 / 0.85 ~ 1.18 times the number of volumes in the input series. If a cuboid kernel is requested, but the -extent option is not specified, the command will select the smallest isotropic patch size that exceeds the number of DW images in the input data; e.g., 5x5x5 for data with <= 125 DWI volumes, 7x7x7 for data with <= 343 DWI volumes, etc.
-
-By default, optimal value shrinkage based on minimisation of the Frobenius norm will be used to attenuate eigenvectors based on the estimated noise level. Hard truncation of sub-threshold components and inclusion of supra-threshold components---which was the behaviour of the dwidenoise command in version 3.0.x---can be activated using -filter truncate.
-
--aggregation exclusive corresponds to the behaviour of the dwidenoise command in version 3.0.x, where the output intensities for a given image voxel are determined exclusively from the PCA decomposition where the sliding spatial window is centred at that voxel. In all other use cases, so-called "overcomplete local PCA" is performed, where the intensities for an output image voxel are some combination of all PCA decompositions for which that voxel is included in the local spatial kernel. There are multiple algebraic forms that modulate the weight with which each decomposition contributes with greater or lesser strength toward the output image intensities. The various options are: 'gaussian': A Gaussian distribution with FWHM equal to twice the voxel size, such that decompisitions centred more closely to the output voxel have greater influence; 'invl0': The inverse of the L0 norm (ie. rank) of each decomposition, as used in Manjon et al. 2013; 'rank': The rank of each decomposition, such that high-rank decompositions contribute more strongly to the output intensities regardless of distance between the output voxel and the centre of the decomposition kernel; 'uniform': All decompositions that include the output voxel in the sliding spatial window contribute equally.
 
 Options
 -------
@@ -59,23 +57,10 @@ Options for controlling the sliding spatial window kernel
 
 -  **-extent window** Set the patch size of the cuboid kernel; can be either a single odd integer or a comma-separated triplet of odd integers
 
-Options that affect reconstruction of the output image series
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
--  **-mask image** Only denoise voxels within the specified binary brain mask image.
-
--  **-filter choice** Modulate how component contributions are filtered based on the cumulative eigenvalues relative to the noise level; options are: truncate,frobenius; default: frobenius (Optimal Shrinkage based on minimisation of the Frobenius norm)
-
--  **-aggregator choice** Select how the outcomes of multiple PCA outcomes centred at different voxels contribute to the reconstructed DWI signal in each voxel; options are: exclusive,gaussian,invl0,rank,uniform; default: Gaussian
-
 Options for exporting additional data regarding PCA behaviour
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
--  **-noise_out image** The output noise map, i.e., the estimated noise level 'sigma' in the data. Note that on complex input data, this will be the total noise level across real and imaginary channels, so a scale factor sqrt(2) applies.
-
--  **-rank_input image** The signal rank estimated for the denoising patch centred at each input image voxel
-
--  **-rank_output image** An estimated rank for the output image data, accounting for multi-patch aggregation
+-  **-rank image** The signal rank estimated for the denoising patch centred at each input image voxel
 
 Options for debugging the operation of sliding window kernels
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -83,10 +68,6 @@ Options for debugging the operation of sliding window kernels
 -  **-max_dist image** The maximum distance between a voxel and another voxel that was included in the local denoising patch
 
 -  **-voxelcount image** The number of voxels that contributed to the PCA for processing of each voxel
-
--  **-sum_aggregation image** The sum of aggregation weights of those patches contributing to each output voxel
-
--  **-sum_optshrink image** the sum of eigenvector weights computed for the denoising patch centred at each voxel as a result of performing optimal shrinkage
 
 Standard options
 ^^^^^^^^^^^^^^^^
@@ -110,15 +91,11 @@ Standard options
 References
 ^^^^^^^^^^
 
-Veraart, J.; Novikov, D.S.; Christiaens, D.; Ades-aron, B.; Sijbers, J. & Fieremans, E. Denoising of diffusion MRI using random matrix theory. NeuroImage, 2016, 142, 394-406, doi: 10.1016/j.neuroimage.2016.08.016
-
 Veraart, J.; Fieremans, E. & Novikov, D.S. Diffusion MRI noise mapping using random matrix theory. Magn. Res. Med., 2016, 76(5), 1582-1593, doi: 10.1002/mrm.26059
 
 Cordero-Grande, L.; Christiaens, D.; Hutter, J.; Price, A.N.; Hajnal, J.V. Complex diffusion-weighted image estimation via matrix recovery under general noise models. NeuroImage, 2019, 200, 391-404, doi: 10.1016/j.neuroimage.2019.06.039
 
 * If using -estimator mrm2022: Olesen, J.L.; Ianus, A.; Ostergaard, L.; Shemesh, N.; Jespersen, S.N. Tensor denoising of multidimensional MRI data. Magnetic Resonance in Medicine, 2022, 89(3), 1160-1172
-
-* If using anything other than -aggregation exclusive: Manjon, J.V.; Coupe, P.; Concha, L.; Buades, A.; D. Collins, D.L.; Robles, M. Diffusion Weighted Image Denoising Using Overcomplete Local PCA. PLoS ONE, 2013, 8(9), e73021
 
 Tournier, J.-D.; Smith, R. E.; Raffelt, D.; Tabbara, R.; Dhollander, T.; Pietsch, M.; Christiaens, D.; Jeurissen, B.; Yeh, C.-H. & Connelly, A. MRtrix3: A fast, flexible and open software framework for medical image processing and visualisation. NeuroImage, 2019, 202, 116137
 

@@ -34,6 +34,7 @@ List of MRtrix3 commands
     commands/dwi2adc
     commands/dwi2fod
     commands/dwi2mask
+    commands/dwi2noise
     commands/dwi2response
     commands/dwi2tensor
     commands/dwibiascorrect
@@ -167,6 +168,7 @@ List of MRtrix3 commands
     |cpp.png|, :ref:`dwi2adc`, "Calculate ADC and/or IVIM parameters."
     |cpp.png|, :ref:`dwi2fod`, "Estimate fibre orientation distributions from diffusion data using spherical deconvolution"
     |python.png|, :ref:`dwi2mask`, "Generate a binary mask from DWI data"
+    |cpp.png|, :ref:`dwi2noise`, "Noise level estimation using Marchenko-Pastur PCA"
     |python.png|, :ref:`dwi2response`, "Estimate response function(s) for spherical deconvolution"
     |cpp.png|, :ref:`dwi2tensor`, "Diffusion (kurtosis) tensor estimation"
     |python.png|, :ref:`dwibiascorrect`, "Perform B1 field inhomogeneity correction for a DWI volume series"
