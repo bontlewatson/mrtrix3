@@ -8,6 +8,10 @@ on:
       types: [checks_requested]
       branches: [master]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux-clang-build:
     runs-on: ubuntu-latest
@@ -25,7 +29,7 @@ jobs:
     - name: install dependencies
       run: |
          sudo apt-get update
-         sudo apt-get install clang qt6-base-dev libglvnd-dev libeigen3-dev zlib1g-dev libfftw3-dev ninja-build python3-distutils
+         sudo apt-get install clang qt6-base-dev libglvnd-dev zlib1g-dev libfftw3-dev ninja-build python3-distutils python3-numpy
 
     - name: Run sccache-cache
       uses: mozilla-actions/sccache-action@v0.0.4
@@ -54,10 +58,13 @@ jobs:
       run: cmake --build build
 
     - name: unit tests
-      run: cd build && ctest -R unit --output-on-failure
+      run: cd build && ctest -L unittest --output-on-failure
 
     - name: binary tests
-      run: cd build && ctest -R bin --output-on-failure
+      run: cd build && ctest -L binary --output-on-failure
+#
+#    - name: limited script tests
+#      run: cd build && ctest -L pythonci --output-on-failure
 
     - name: check command documentation
       run: ./docs/generate_user_docs.sh --build-dir build && git diff --exit-code docs/
@@ -83,7 +90,7 @@ jobs:
     - name: install dependencies
       run: |
          sudo apt-get update
-         sudo apt-get install g++-9 qt6-base-dev libglvnd-dev libeigen3-dev zlib1g-dev libfftw3-dev ninja-build
+         sudo apt-get install g++-9 qt6-base-dev libglvnd-dev zlib1g-dev libfftw3-dev ninja-build python3-numpy
 
     - name: Run sccache-cache
       uses: mozilla-actions/sccache-action@v0.0.4
@@ -110,10 +117,13 @@ jobs:
       run: cmake --build build
 
     - name: unit tests
-      run: cd build && ctest -R unit --output-on-failure
+      run: cd build && ctest -L unittest --output-on-failure
 
     - name: binary tests
-      run: cd build && ctest -R bin --output-on-failure
+      run: cd build && ctest -L binary --output-on-failure
+#
+#    - name: limited script tests
+#      run: cd build && ctest -L pythonci --output-on-failure
 
   macos-build:
 
@@ -132,6 +142,7 @@ jobs:
       run: |
          brew bundle --file=${{ github.workspace }}/.brewfile
          brew link --force qt
+         brew install numpy
 
     - name: Run sccache-cache
       uses: mozilla-actions/sccache-action@v0.0.4
@@ -151,18 +162,23 @@ jobs:
         -B build
         -G Ninja
         -D CMAKE_BUILD_TYPE=Release
+        -D CMAKE_FIND_FRAMEWORK=LAST
         -D MRTRIX_BUILD_TESTS=ON
         -D MRTRIX_STL_DEBUGGING=ON
+        -D MRTRIX_USE_PCH=OFF
         -D MRTRIX_WARNINGS_AS_ERRORS=ON
 
     - name: build
       run: cmake --build build
 
     - name: unit tests
-      run: cd build && ctest -R unit --output-on-failure
+      run: cd build && ctest -L unittest --output-on-failure
 
     - name: binary tests
-      run: cd build && ctest -R bin --output-on-failure
+      run: cd build && ctest -L binary --output-on-failure
+#
+#    - name: limited script tests
+#      run: cd build && ctest -L pythonci --output-on-failure
 
 
 
@@ -197,10 +213,8 @@ jobs:
             ${{env.MINGW_PACKAGE_PREFIX}}-bc
             ${{env.MINGW_PACKAGE_PREFIX}}-cmake
             ${{env.MINGW_PACKAGE_PREFIX}}-diffutils
-            ${{env.MINGW_PACKAGE_PREFIX}}-eigen3
             ${{env.MINGW_PACKAGE_PREFIX}}-fftw
             ${{env.MINGW_PACKAGE_PREFIX}}-gcc
-            ${{env.MINGW_PACKAGE_PREFIX}}-libtiff
             ${{env.MINGW_PACKAGE_PREFIX}}-ninja
             ${{env.MINGW_PACKAGE_PREFIX}}-pkg-config
             ${{env.MINGW_PACKAGE_PREFIX}}-qt6-base
@@ -230,10 +244,13 @@ jobs:
         run: cmake --build build
 
       - name: unit tests
-        run: cd build && ctest -R unit --output-on-failure
+        run: cd build && ctest -L unittest --output-on-failure
 
       - name: binary tests
-        run: cd build && ctest -R bin --output-on-failure
+        run: cd build && ctest -L binary --output-on-failure
+#
+#      - name: limited script tests
+#        run: cd build && ctest -L pythonci --output-on-failure
 
   secondary-checks:
     runs-on: ubuntu-latest
@@ -254,7 +271,6 @@ jobs:
 
     - name: pylint
       run: |
-         echo "__version__ = 'pylint testing' #pylint: disable=unused-variable" > ./python/lib/mrtrix3/_version.py
          ./run_pylint || { cat pylint.log; false; }
 
     - name: check copyright headers
@@ -270,4 +286,4 @@ jobs:
         extensions: 'h,cpp'
         clangFormatVersion: 16
         # Ignore third party headers
-        exclude: './core/file/json.h ./core/file/nifti1.h ./core/file/nifti2.h'
+        exclude: './thirdparty ./_deps'
