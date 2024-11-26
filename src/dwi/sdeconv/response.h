@@ -39,14 +39,14 @@ namespace MR
 
         int lmax() const { return Math::ZSH::LforN(original_coeffs.cols()); }
 
-        const vector<double> &bvalues() const { return original_bvals; }
+        const std::vector<double> &bvalues() const { return original_bvals; }
 
         // int size() const { return original_bvals.size(); }
 
         // LOAD MATRIX
         void load(const std::string &filename)
         {
-          vector<std::string> comments;
+          std::vector<std::string> comments;
           auto vec = File::Matrix::load_matrix_2D_vector(filename, &comments);
 
           //load bvalues
@@ -72,7 +72,7 @@ namespace MR
 
       private:
         Eigen::MatrixXd original_coeffs;
-        vector<double> original_bvals;
+        std::vector<double> original_bvals;
       };
     }
   }

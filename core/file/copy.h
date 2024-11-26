@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2023 the MRtrix3 contributors.
+/* Copyright (c) 2008-2024 the MRtrix3 contributors.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,36 +14,23 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
-#ifndef __file_copy_h__
-#define __file_copy_h__
+#pragma once
 
 #include "exception.h"
-#include "file/utils.h"
 #include "file/mmap.h"
+#include "file/utils.h"
 
+namespace MR::File {
 
-namespace MR
-{
-  namespace File
+inline void copy(const std::string &source, const std::string &destination) {
   {
-
-
-    inline void copy (const std::string& source, const std::string& destination)
-    {
-      {
-        DEBUG ("copying file \"" + source + "\" to \"" + destination + "\"...");
-        MMap input (source);
-        create (destination, input.size());
-        MMap output (destination, true);
-        ::memcpy (output.address(), input.address(), input.size());
-      }
-      check_app_exit_code();
-    }
-
-
+    DEBUG("copying file \"" + source + "\" to \"" + destination + "\"...");
+    MMap input(source);
+    create(destination, input.size());
+    MMap output(destination, true);
+    ::memcpy(output.address(), input.address(), input.size());
   }
+  check_app_exit_code();
 }
 
-#endif
-
-
+} // namespace MR::File

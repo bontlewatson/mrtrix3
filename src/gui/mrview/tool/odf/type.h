@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2023 the MRtrix3 contributors.
+/* Copyright (c) 2008-2024 the MRtrix3 contributors.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,41 +14,19 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
-#ifndef __gui_mrview_tool_odf_type_h__
-#define __gui_mrview_tool_odf_type_h__
-
+#pragma once
 
 #include "gui/dwi/renderer.h"
 
+namespace MR {
 
-namespace MR
-{
+class Header;
 
-  class Header;
+namespace GUI::MRView::Tool {
 
-  namespace GUI
-  {
-    namespace MRView
-    {
-      namespace Tool
-      {
+// TODO Remove
+using odf_type_t = GUI::DWI::Renderer::mode_t;
 
+} // namespace GUI::MRView::Tool
 
-
-        // TODO Remove
-        using odf_type_t = GUI::DWI::Renderer::mode_t;
-
-
-
-
-      }
-    }
-  }
-}
-
-#endif
-
-
-
-
-
+} // namespace MR

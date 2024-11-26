@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2023 the MRtrix3 contributors.
+/* Copyright (c) 2008-2024 the MRtrix3 contributors.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,33 +14,24 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
-#ifndef __image_handler_png_h__
-#define __image_handler_png_h__
+#pragma once
 
 #ifdef MRTRIX_PNG_SUPPORT
 
-#include "types.h"
 #include "image_io/base.h"
+#include "types.h"
 
-namespace MR
-{
-  namespace ImageIO
-  {
+namespace MR::ImageIO {
 
-    class PNG : public Base
-    { 
-      public:
-        PNG (const Header& header) : Base (header) { }
+class PNG : public Base {
+public:
+  PNG(const Header &header) : Base(header) {}
 
-      protected:
-        virtual void load (const Header&, size_t);
-        virtual void unload (const Header&);
-    };
+protected:
+  virtual void load(const Header &, size_t);
+  virtual void unload(const Header &);
+};
 
-  }
-}
+} // namespace MR::ImageIO
 
 #endif
-#endif
-
-

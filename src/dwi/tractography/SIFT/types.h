@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2023 the MRtrix3 contributors.
+/* Copyright (c) 2008-2024 the MRtrix3 contributors.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,33 +14,13 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
-#ifndef __dwi_tractography_sift_types_h__
-#define __dwi_tractography_sift_types_h__
-
+#pragma once
 
 #include "thread_queue.h"
 
+namespace MR::DWI::Tractography::SIFT {
 
-namespace MR
-{
-  namespace DWI
-  {
-    namespace Tractography
-    {
-      namespace SIFT
-      {
+using track_t = unsigned int;
+using voxel_t = unsigned int;
 
-
-      using track_t = unsigned int;
-      using voxel_t = unsigned int;
-
-
-      }
-    }
-  }
-}
-
-
-#endif
-
-
+} // namespace MR::DWI::Tractography::SIFT

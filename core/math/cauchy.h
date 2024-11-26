@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2023 the MRtrix3 contributors.
+/* Copyright (c) 2008-2024 the MRtrix3 contributors.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,23 +14,13 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
-#ifndef __math_cauchy_h__
-#define __math_cauchy_h__
+#pragma once
 
-namespace MR
-{
-  namespace Math
-  {
+namespace MR::Math {
 
-    inline float cauchy (float x, float s)
-    {
-      x /= s;
-      return (1.0 / (1.0 + x*x));
-    }
-
-  }
+inline float cauchy(float x, float s) {
+  x /= s;
+  return (1.0 / (1.0 + x * x));
 }
 
-#endif
-
-
+} // namespace MR::Math

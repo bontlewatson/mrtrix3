@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2023 the MRtrix3 contributors.
+/* Copyright (c) 2008-2024 the MRtrix3 contributors.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,28 +14,12 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
-
-#ifndef __math_stats_fwe_h__
-#define __math_stats_fwe_h__
+#pragma once
 
 #include "math/stats/typedefs.h"
 
+namespace MR::Math::Stats {
 
-namespace MR
-{
-  namespace Math
-  {
-    namespace Stats
-    {
+matrix_type fwe_pvalue(const matrix_type &null_dist, const matrix_type &stats);
 
-
-
-      matrix_type fwe_pvalue (const matrix_type& null_dist, const matrix_type& stats);
-
-
-
-    }
-  }
 }
-
-#endif

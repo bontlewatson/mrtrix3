@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2023 the MRtrix3 contributors.
+/* Copyright (c) 2008-2024 the MRtrix3 contributors.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,37 +14,22 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
-#ifndef __gui_shapes_cylinder_h__
-#define __gui_shapes_cylinder_h__
+#pragma once
 
 #include "gui/opengl/gl.h"
 #include "gui/opengl/gl_core_3_3.h"
 
-namespace MR
-{
-  namespace GUI
-  {
-    namespace Shapes
-    {
+namespace MR::GUI::Shapes {
 
+class Cylinder {
+public:
+  Cylinder() : num_indices(0) {}
 
-    class Cylinder
-    { 
-      public:
-        Cylinder () : num_indices (0) { }
+  void LOD(const size_t);
 
-        void LOD (const size_t);
+  size_t num_indices;
+  GL::VertexBuffer vertex_buffer, normal_buffer;
+  GL::IndexBuffer index_buffer;
+};
 
-        size_t num_indices;
-        GL::VertexBuffer vertex_buffer, normal_buffer;
-        GL::IndexBuffer index_buffer;
-
-    };
-
-
-    }
-  }
-}
-
-#endif
-
+} // namespace MR::GUI::Shapes

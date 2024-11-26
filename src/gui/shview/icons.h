@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2023 the MRtrix3 contributors.
+/* Copyright (c) 2008-2024 the MRtrix3 contributors.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,10 +14,6 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
-#ifndef __gui_shview_icons_h__
-#define __gui_shview_icons_h__
+#pragma once
 
-//RCC: mrtrix.png
-
-#endif
-
+// RCC: mrtrix.png

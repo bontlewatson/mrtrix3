@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2023 the MRtrix3 contributors.
+/* Copyright (c) 2008-2024 the MRtrix3 contributors.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,40 +14,26 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
-#ifndef __gui_mrview_tool_fixel_directory_h__
-#define __gui_mrview_tool_fixel_directory_h__
+#pragma once
 
 #include "gui/mrview/tool/fixel/base_fixel.h"
 
-namespace MR
-{
-  namespace GUI
-  {
-    namespace MRView
-    {
-      namespace Tool
-      {
-        class Directory : public FixelType<FixelIndexImageType>
-        { 
-          public:
-            Directory (const std::string& filename, Fixel& fixel_tool) :
-              FixelType (MR::Fixel::find_index_header (Path::dirname (filename)).name (), fixel_tool)
-            {
-              value_types = {"unity"};
-              colour_types = {"direction"};
+namespace MR::GUI::MRView::Tool {
+class Directory : public FixelType<FixelIndexImageType> {
+public:
+  Directory(const std::string &filename, Fixel &fixel_tool)
+      : FixelType(MR::Fixel::find_index_header(Path::dirname(filename)).name(), fixel_tool) {
+    value_types = {"unity"};
+    colour_types = {"direction"};
 
-              fixel_data.reset (new FixelIndexImageType (header.get_image<uint32_t> ()));
-              load_image (filename);
-            }
-
-            void load_image_buffer () override;
-            FixelValue& get_fixel_value (const std::string& key) const override;
-          protected:
-            void lazy_load_fixel_value_file (const std::string& key) const;
-        };
-      }
-    }
+    fixel_data.reset(new FixelIndexImageType(header.get_image<uint32_t>()));
+    load_image(filename);
   }
-}
 
-#endif
+  void load_image_buffer() override;
+  FixelValue &get_fixel_value(const std::string &key) const override;
+
+protected:
+  void lazy_load_fixel_value_file(const std::string &key) const;
+};
+} // namespace MR::GUI::MRView::Tool

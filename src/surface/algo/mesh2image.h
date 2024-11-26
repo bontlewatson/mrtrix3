@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2023 the MRtrix3 contributors.
+/* Copyright (c) 2008-2024 the MRtrix3 contributors.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,30 +14,14 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
-#ifndef __surface_algo_mesh2image_h__
-#define __surface_algo_mesh2image_h__
-
+#pragma once
 
 #include "image.h"
-#include "types.h"
 #include "surface/mesh.h"
+#include "types.h"
 
+namespace MR::Surface::Algo {
 
+void mesh2image(const Mesh &, Image<float> &);
 
-namespace MR
-{
-  namespace Surface
-  {
-    namespace Algo
-    {
-
-
-      void mesh2image (const Mesh&, Image<float>&);
-
-
-    }
-  }
 }
-
-#endif
-

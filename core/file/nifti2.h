@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2023 the MRtrix3 contributors.
+/* Copyright (c) 2008-2024 the MRtrix3 contributors.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,8 +14,7 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
-#ifndef __NIFTI2_HEADER
-#define __NIFTI2_HEADER
+#pragma once
 
 /*---------------------------------------------------------------------------*/
 /* Changes to the header from NIFTI-1 to NIFTI-2 are intended to allow for
@@ -119,4 +118,3 @@ typedef struct nifti_2_header nifti_2_header ;
 #endif
 /*=================*/
 
-#endif /* __NIFTI2_HEADER */

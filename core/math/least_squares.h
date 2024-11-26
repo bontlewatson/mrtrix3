@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2023 the MRtrix3 contributors.
+/* Copyright (c) 2008-2024 the MRtrix3 contributors.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,58 +14,35 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
-#ifndef __math_least_squares_h__
-#define __math_least_squares_h__
+#pragma once
 
 #include <Eigen/Cholesky>
 
 #include "types.h"
 
-namespace MR
-{
-  namespace Math
-  {
+namespace MR::Math {
 
-    /** @addtogroup linalg
-      @{ */
+/** @addtogroup linalg
+  @{ */
 
-    /** @defgroup ls Least-squares & Moore-Penrose pseudo-inverse
-      @{ */
+/** @defgroup ls Least-squares & Moore-Penrose pseudo-inverse
+  @{ */
 
-
-
-    //! return Moore-Penrose pseudo-inverse of M
-    template <class MatrixType>
-      inline Eigen::Matrix<typename MatrixType::Scalar,Eigen::Dynamic, Eigen::Dynamic> pinv (const MatrixType& M)
-      {
-        if (M.rows() >= M.cols())
-         return (M.transpose()*M).ldlt().solve (M.transpose());
-        else
-          return (M*M.transpose()).ldlt().solve (M).transpose();
-      }
-
-    template <class MatrixType>
-      inline size_t rank (const MatrixType& M)
-      {
-        Eigen::FullPivLU<MatrixType> lu_decomp (M);
-        return lu_decomp.rank();
-      }
-
-    /** @} */
-    /** @} */
-
-
-
-
-  }
+//! return Moore-Penrose pseudo-inverse of M
+template <class MatrixType>
+inline Eigen::Matrix<typename MatrixType::Scalar, Eigen::Dynamic, Eigen::Dynamic> pinv(const MatrixType &M) {
+  if (M.rows() >= M.cols())
+    return (M.transpose() * M).ldlt().solve(M.transpose());
+  else
+    return (M * M.transpose()).ldlt().solve(M).transpose();
 }
 
-#endif
+template <class MatrixType> inline size_t rank(const MatrixType &M) {
+  Eigen::FullPivLU<MatrixType> lu_decomp(M);
+  return lu_decomp.rank();
+}
 
+/** @} */
+/** @} */
 
-
-
-
-
-
-
+} // namespace MR::Math

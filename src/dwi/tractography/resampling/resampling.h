@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2023 the MRtrix3 contributors.
+/* Copyright (c) 2008-2024 the MRtrix3 contributors.
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,65 +14,38 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
-#ifndef __dwi_tractography_resampling_resampling_h__
-#define __dwi_tractography_resampling_resampling_h__
-
+#pragma once
 
 #include "app.h"
 
 #include "dwi/tractography/streamline.h"
 
+namespace MR::DWI::Tractography::Resampling {
 
-namespace MR {
-  namespace DWI {
-    namespace Tractography {
-      namespace Resampling {
+extern const App::OptionGroup ResampleOption;
 
+class Base;
+Base *get_resampler();
 
+using value_type = float;
+using point_type = typename Streamline<>::point_type;
 
-        extern const App::OptionGroup ResampleOption;
+// cubic interpolation (tension = 0.0) looks 'bulgy' between control points
+constexpr value_type hermite_tension = value_type(0.1);
 
+class Base {
+public:
+  Base() {}
+  virtual ~Base() {}
 
-        class Base;
-        Base* get_resampler();
+  virtual Base *clone() const = 0;
+  virtual bool operator()(const Streamline<> &, Streamline<> &) const = 0;
+  virtual bool valid() const = 0;
+};
 
-        using value_type = float;
-        using point_type = typename Streamline<>::point_type;
+template <class Derived> class BaseCRTP : public Base {
+public:
+  virtual Base *clone() const { return new Derived(static_cast<Derived const &>(*this)); }
+};
 
-        // cubic interpolation (tension = 0.0) looks 'bulgy' between control points
-        constexpr value_type hermite_tension = value_type(0.1);
-
-
-        class Base
-        { 
-          public:
-            Base() { }
-            virtual ~Base() { }
-
-            virtual Base* clone() const = 0;
-            virtual bool operator() (const Streamline<>&, Streamline<>&) const = 0;
-            virtual bool valid () const = 0;
-
-        };
-
-        template <class Derived>
-        class BaseCRTP : public Base
-        { 
-          public:
-            virtual Base* clone() const {
-              return new Derived(static_cast<Derived const&>(*this));
-            }
-        };
-
-
-
-
-      }
-    }
-  }
-}
-
-#endif
-
-
-
+} // namespace MR::DWI::Tractography::Resampling
