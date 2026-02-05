@@ -31,6 +31,7 @@ public:
   Response(const std::string &filename) { load(filename); }
   Response(Response &&other) = default;
 
+  
   Eigen::VectorXd coeffs(const double bval) {
     if (bval < original_bvals[0])
       throw Exception("bvalue out of bounds");

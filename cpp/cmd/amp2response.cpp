@@ -75,6 +75,11 @@ void usage() {
                       " (can be a comma-separated list for multi-shell data)")
       + Argument ("values").type_sequence_int();
 
+    // add option for which solver to use: the current OLS or SE fit via LM
+    + Option("solver", "specify the solver model used to estimate the response function"
+                       "ordinary least-squares (default) or stretched exponential" );
+    // add a note to say se should be selected for non-shelled data?? 
+
   REFERENCES
     + "Smith, R. E.; Dhollander, T. & Connelly, A. " // Internal
       "Constrained linear least squares estimation of anisotropic response function for spherical deconvolution. "
@@ -274,6 +279,20 @@ void run() {
     max_lmax = (shells && shells->smallest().is_bzero() && lmax.size() == 1) ? 0 : 10;
   }
 
+  // parse option for the chosen solver model:  
+  enum class solverModel {OLS, SE}; 
+
+  auto opt=get_options("solver");
+  if (!opt.empty()) {
+    const std::string solver = opt[0][0];
+    if (solver == "ordinary least-squares"){
+      solverModel model = solverModel::OLS;}
+      else if (solver == "stretched exponential"){
+        solverModel model = solverModel::SE;}
+      else
+        throw Exception("Invalid solver model: " + solver +  "(expected: ols or stretched_exp)"); 
+  }
+ 
   auto image = header.get_image<float>();
   auto mask = Image<bool>::open(argument[1]);
   check_dimensions(image, mask, 0, 3);
@@ -322,6 +341,7 @@ void run() {
     Eigen::VectorXd rf;
     // Is this anything other than an isotropic response?
 
+    // need to add option compute RF using SE model fit via LM is indicated
     if (!lmax[shell_index] || use_ols) {
 
       rf = shared.M.llt().solve(shared.b);
