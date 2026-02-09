@@ -17,6 +17,7 @@
 #pragma once
 
 #include "dwi/gradient.h"
+#include "dwi/sdeconv/se_response.h"
 #include "dwi/shells.h"
 #include "file/matrix.h"
 #include "header.h"
@@ -42,11 +43,9 @@ public:
   public:
     Shared(const Header &dwi_header)
         : grad(DWI::get_DW_scheme(dwi_header)),
-          shells(grad),
           HR_dirs(DWI::Directions::electrostatic_repulsion_300()),
           solution_min_norm_regularisation(default_msmt_normlambda),
           constraint_min_norm_regularisation(default_msmt_neglambda) {
-      shells.select_shells(false, false, false);
     }
 
     void parse_cmdline_options() {
@@ -68,47 +67,34 @@ public:
     void set_responses(const std::vector<std::string> &files) {
       lmax_response.clear();
       for (const auto &s : files) {
-        Eigen::MatrixXd r;
         try {
-          r = File::Matrix::load_matrix(s);
+          responses.push_back (File::Matrix::load_matrix(s));
         } catch (Exception &e) {
-          throw Exception(e, "File \"" + s + "\" is not a valid response function file");
+          try {
+            se_responses.push_back (SEResponse (s));
+          } catch (Exception &e) {
+            throw Exception(e, "File \"" + s + "\" is not a valid response function file");
+          }
         }
-        responses.push_back(std::move(r));
       }
       prepare_responses();
       response_files = files;
     }
 
-    void set_responses(const std::vector<Eigen::MatrixXd> &matrices) {
-      responses = matrices;
-      prepare_responses();
-    }
-
     void init() {
       if (lmax.empty()) {
-        lmax = lmax_response;
+        lmax = lmax_response;  // TODO - need handling for SE case
         for (size_t t = 0; t != num_tissues(); ++t) {
           lmax[t] = std::min(default_msmt_lmax, lmax[t]);
         }
       } else {
         if (lmax.size() != num_tissues())
-          throw Exception("Number of lmaxes specified (" + str(lmax.size()) + ") does not match number of tissues (" +
-                          str(num_tissues()) + ")");
+          throw Exception("Number of lmaxes specified (" + str(lmax.size()) +
+              ") does not match number of tissues (" + str(num_tissues()) + ")");
         for (const auto i : lmax) {
           if (i % 2)
             throw Exception("Each value of lmax must be a non-negative even integer");
         }
-      }
-
-      for (size_t t = 0; t != num_tissues(); ++t) {
-        if (static_cast<size_t>(responses[t].rows()) != num_shells())
-          throw Exception("number of rows in response functions must match number of b-value shells; "
-                          "number of shells is " +
-                          str(num_shells()) + ", but file \"" + response_files[t] + "\" contains " +
-                          str(responses[t].rows()) + " rows");
-        // Pad response functions out to the requested lmax for this tissue
-        responses[t].conservativeResizeLike(Eigen::MatrixXd::Zero(num_shells(), Math::ZSH::NforL(lmax[t])));
       }
 
       //////////////////////////////////////////////////
@@ -138,18 +124,53 @@ public:
           if (std::isnan(SHT(i, j)))
             SHT(i, j) = 0.0;
 
-      // TODO: is this just computing the Associated Legrendre polynomials...?
-      Eigen::MatrixXd delta(1, 2);
-      delta << 0, 0;
-      Eigen::MatrixXd DSH__ = Math::SH::init_transform(delta, maxlmax);
-      Eigen::VectorXd DSH_ = DSH__.row(0);
-      Eigen::VectorXd DSH(maxlmax / 2 + 1);
-      size_t j = 0;
-      for (ssize_t i = 0; i < DSH_.size(); i++)
-        if (DSH_[i] != 0.0) {
-          DSH[j] = DSH_[i];
-          j++;
+      std::vector<size_t> shell_for_vol;
+
+      if (responses.size()) {
+        // assume shell structure:
+        DWI::Shells shells (grad);
+        shells.select_shells(false, false, false);
+
+        for (size_t t = 0; t != num_tissues(); ++t) {
+          if (static_cast<size_t>(responses[t].rows()) != shells.count())
+            throw Exception("number of rows in response functions must match number of b-value shells; "
+                "number of shells is " +
+                str(shells.count()) + ", but file \"" + response_files[t] + "\" contains " +
+                str(responses[t].rows()) + " rows");
+          // Pad response functions out to the requested lmax for this tissue
+          responses[t].conservativeResizeLike (
+              Eigen::MatrixXd::Zero(shells.count(), Math::ZSH::NforL(lmax[t])));
         }
+
+        // TODO: is this just computing the Associated Legrendre polynomials...?
+        // this is required for conversion from SH to RH:
+        Eigen::MatrixXd delta(1, 2);
+        delta << 0, 0;
+        Eigen::MatrixXd DSH__ = Math::SH::init_transform(delta, maxlmax);
+        Eigen::VectorXd DSH_ = DSH__.row(0);
+        Eigen::VectorXd DSH(maxlmax / 2 + 1);
+        size_t j = 0;
+        for (ssize_t i = 0; i < DSH_.size(); i++)
+          if (DSH_[i] != 0.0) {
+            DSH[j] = DSH_[i];
+            j++;
+          }
+
+        // convert responses from SH to RH:
+        for (auto& r : responses)
+          for (int c = 0; c < r.cols(); ++c)
+            r.col(c) /= DSH[c];
+
+        // reverse mapping from volume to shell index:
+        shell_for_vol.resize (grad.rows());
+        for (size_t shell_idx = 0; shell_idx < shells.count(); ++shell_idx) {
+          const auto& vols = shells[shell_idx].get_volumes();
+          for (size_t idx = 0; idx < vols.size(); idx++)
+            shell_for_vol[vols[idx]] = shell_idx;
+        }
+      } else {
+        // TODO: set up SE responses (lmax in particular)
+      }
 
       size_t pbegin = 0;
       for (size_t tissue_idx = 0; tissue_idx < num_tissues(); ++tissue_idx) {
@@ -157,25 +178,23 @@ public:
         const size_t tissue_n = Math::SH::NforL(tissue_lmax);
         const size_t tissue_nmzero = tissue_lmax / 2 + 1;
 
-        for (size_t shell_idx = 0; shell_idx < num_shells(); ++shell_idx) {
-          Eigen::VectorXd response_ = responses[tissue_idx].row(shell_idx);
-          response_ = (response_.array() / DSH.head(tissue_nmzero).array()).matrix();
+        for (size_t vol = 0; vol < grad.rows(); ++vol) {
           Eigen::VectorXd fconv(tissue_n);
           int li = 0;
           int mi = 0;
+          const size_t shell_idx = shell_for_vol[vol];
           for (int l = 0; l <= static_cast<int>(tissue_lmax); l += 2) {
             for (int m = -l; m <= l; m++) {
-              fconv[mi] = response_[li];
+              // TODO: this is where the SE responses need to be injected:
+              fconv[mi] = responses[tissue_idx](shell_idx,li);
               mi++;
             }
             li++;
           }
-          std::vector<size_t> vols = shells[shell_idx].get_volumes();
-          for (size_t idx = 0; idx < vols.size(); idx++) {
-            Eigen::VectorXd SHT_(SHT.row(vols[idx]).head(tissue_n));
-            SHT_ = (SHT_.array() * fconv.array()).matrix();
-            C.row(vols[idx]).segment(pbegin, tissue_n) = SHT_;
-          }
+
+          Eigen::VectorXd SHT_row (SHT.row(vol).head(tissue_n));
+          SHT_row.array() *= fconv.array();
+          C.row(vol).segment(pbegin, tissue_n) = SHT_row;
         }
         pbegin += tissue_n;
       }
@@ -211,37 +230,44 @@ public:
       INFO("Multi-shell, multi-tissue CSD initialised successfully");
     }
 
-    size_t num_shells() const { return shells.count(); }
     size_t num_tissues() const { return responses.size(); }
 
     const Eigen::MatrixXd grad;
-    DWI::Shells shells;
     Eigen::MatrixXd HR_dirs;
     std::vector<uint32_t> lmax, lmax_response;
     std::vector<Eigen::MatrixXd> responses;
+    std::vector<SEResponse> se_responses;
     std::vector<std::string> response_files;
     Math::ICLS::Problem<double> problem;
     double solution_min_norm_regularisation, constraint_min_norm_regularisation;
 
   private:
     void prepare_responses() {
-      for (size_t t = 0; t != num_tissues(); ++t) {
-        Eigen::MatrixXd &r(responses[t]);
-        size_t n = 0;
-        for (Eigen::Index row = 0; row < r.rows(); row++) {
-          for (Eigen::Index col = 0; col < r.cols(); col++) {
-            if (r(row, col))
-              n = std::max(n, static_cast<size_t>(col + 1));
+
+      if (responses.size() && se_responses.size())
+        throw Exception ("cannot perform MSMT CSD using mixed response types");
+
+      if (responses.size()) {
+        for (size_t t = 0; t != num_tissues(); ++t) {
+          Eigen::MatrixXd &r(responses[t]);
+          size_t n = 0;
+          for (Eigen::Index row = 0; row < r.rows(); row++) {
+            for (Eigen::Index col = 0; col < r.cols(); col++) {
+              if (r(row, col))
+                n = std::max(n, static_cast<size_t>(col + 1));
+            }
           }
+          // Clip off any empty columns, i.e. degrees containing zero coefficients for all shells
+          r.conservativeResize(r.rows(), n);
+          // Store the lmax for each tissue based on their response functions;
+          //   if the user doesn't manually specify lmax, these will determine the
+          //   lmax of each tissue ODF output, with a further default lmax=8
+          //   restriction at that stage
+          lmax_response.push_back(Math::ZSH::LforN(r.cols()));
         }
-        // Clip off any empty columns, i.e. degrees containing zero coefficients for all shells
-        r.conservativeResize(r.rows(), n);
-        // Store the lmax for each tissue based on their response functions;
-        //   if the user doesn't manually specify lmax, these will determine the
-        //   lmax of each tissue ODF output, with a further default lmax=8
-        //   restriction at that stage
-        lmax_response.push_back(Math::ZSH::LforN(r.cols()));
       }
+      else if (se_responses.empty())
+        throw Exception ("no response defined");
     }
   };
 
