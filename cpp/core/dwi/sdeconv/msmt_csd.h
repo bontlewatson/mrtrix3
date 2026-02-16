@@ -71,7 +71,8 @@ public:
           responses.push_back (File::Matrix::load_matrix(s));
         } catch (Exception &e) {
           try {
-            se_responses.push_back (SEResponse (s));
+            se_responses.push_back (SEResponse (s)); // sets model param & the lmax for tissue
+            lmax_response.push_back(se_responses.back().tissue_lmax);
           } catch (Exception &e) {
             throw Exception(e, "File \"" + s + "\" is not a valid response function file");
           }
@@ -83,7 +84,7 @@ public:
 
     void init() {
       if (lmax.empty()) {
-        lmax = lmax_response;  // TODO - need handling for SE case
+        lmax = lmax_response; // from prepare_response / SEResponse
         for (size_t t = 0; t != num_tissues(); ++t) {
           lmax[t] = std::min(default_msmt_lmax, lmax[t]);
         }
@@ -169,7 +170,7 @@ public:
             shell_for_vol[vols[idx]] = shell_idx;
         }
       } else {
-        // TODO: set up SE responses (lmax in particular)
+        // TODO: set up SE responses (lmax in particular) -- see line 75?
       }
 
       size_t pbegin = 0;
@@ -180,17 +181,22 @@ public:
 
         for (size_t vol = 0; vol < grad.rows(); ++vol) {
           Eigen::VectorXd fconv(tissue_n);
+          if (responses.size()) {
           int li = 0;
           int mi = 0;
           const size_t shell_idx = shell_for_vol[vol];
           for (int l = 0; l <= static_cast<int>(tissue_lmax); l += 2) {
             for (int m = -l; m <= l; m++) {
-              // TODO: this is where the SE responses need to be injected:
+              // the rf matrix for shell-based structure
               fconv[mi] = responses[tissue_idx](shell_idx,li);
               mi++;
             }
             li++;
           }
+        }else{
+            // the rf sh response vector for a given b value 
+            fconv = se_responses[tissue_idx].compute_SH_coeff(grad(vol,3));
+        }
 
           Eigen::VectorXd SHT_row (SHT.row(vol).head(tissue_n));
           SHT_row.array() *= fconv.array();
@@ -230,7 +236,12 @@ public:
       INFO("Multi-shell, multi-tissue CSD initialised successfully");
     }
 
-    size_t num_tissues() const { return responses.size(); }
+    size_t num_tissues() const { 
+      if (responses.size())
+        return responses.size();
+      else if (se_responses.size())
+        return se_responses.size();
+    }
 
     const Eigen::MatrixXd grad;
     Eigen::MatrixXd HR_dirs;
