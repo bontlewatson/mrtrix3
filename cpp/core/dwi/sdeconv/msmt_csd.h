@@ -72,7 +72,7 @@ public:
         } catch (Exception &e) {
           try {
             se_responses.push_back (SEResponse (s)); // sets model param & the lmax for tissue
-            lmax_response.push_back(se_responses.back().tissue_lmax);
+            //lmax_response.push_back(se_responses.back().tissue_lmax);
           } catch (Exception &e) {
             throw Exception(e, "File \"" + s + "\" is not a valid response function file");
           }
@@ -170,7 +170,10 @@ public:
             shell_for_vol[vols[idx]] = shell_idx;
         }
       } else {
-        // TODO: set up SE responses (lmax in particular) -- see line 75?
+        // set up SE responses (lmax in particular):
+        for (int t = 0; t != num_tissues(); ++t) 
+          se_responses[t].init(lmax[t]);
+        
       }
 
       size_t pbegin = 0;
@@ -178,24 +181,25 @@ public:
         const size_t tissue_lmax = lmax[tissue_idx];
         const size_t tissue_n = Math::SH::NforL(tissue_lmax);
         const size_t tissue_nmzero = tissue_lmax / 2 + 1;
+        Eigen::VectorXd fconv(tissue_n);
+        Eigen::VectorXd workspace(tissue_n);
 
         for (size_t vol = 0; vol < grad.rows(); ++vol) {
-          Eigen::VectorXd fconv(tissue_n);
           if (responses.size()) {
-          int li = 0;
-          int mi = 0;
-          const size_t shell_idx = shell_for_vol[vol];
-          for (int l = 0; l <= static_cast<int>(tissue_lmax); l += 2) {
-            for (int m = -l; m <= l; m++) {
-              // the rf matrix for shell-based structure
-              fconv[mi] = responses[tissue_idx](shell_idx,li);
-              mi++;
+            int li = 0;
+            int mi = 0;
+            const size_t shell_idx = shell_for_vol[vol];
+            for (int l = 0; l <= static_cast<int>(tissue_lmax); l += 2) {
+              for (int m = -l; m <= l; m++) {
+                // the rf matrix for shell-based structure
+                fconv[mi] = responses[tissue_idx](shell_idx, li);
+                mi++;
+              }
+              li++;
             }
-            li++;
-          }
         }else{
             // the rf sh response vector for a given b value 
-            fconv = se_responses[tissue_idx].compute_SH_coeff(grad(vol,3));
+            se_responses[tissue_idx].compute_SH_coeff(fconv, workspace, grad(vol,3));
         }
 
           Eigen::VectorXd SHT_row (SHT.row(vol).head(tissue_n));
@@ -241,6 +245,8 @@ public:
         return responses.size();
       else if (se_responses.size())
         return se_responses.size();
+      else
+        throw Exception ("no response defined");
     }
 
     const Eigen::MatrixXd grad;
@@ -277,7 +283,11 @@ public:
           lmax_response.push_back(Math::ZSH::LforN(r.cols()));
         }
       }
-      else if (se_responses.empty())
+      else if (se_responses.size()){
+        for (const auto& r : se_responses)
+          lmax_response.push_back(r.is_isotropic() ? 0 : default_msmt_lmax); 
+      }
+      else 
         throw Exception ("no response defined");
     }
   };
