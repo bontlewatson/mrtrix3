@@ -28,6 +28,7 @@ namespace MR::DWI::SDeconv {
 
 class SEResponse {
 
+  // DO: output intensities comp 
 public:
   SEResponse() {}
   SEResponse(const std::string &filename) { load(filename); }
@@ -38,13 +39,13 @@ public:
     // se fit + ZSHT:
     if (is_isotropic()) {
       // param = [s0, D, alpha]
-      double ex = bval * se_coeffs[1];
+      double ex = (bval/1000.0) * se_coeffs[1];
       sh_coeffs(0) = se_coeffs[0] * exp(-std::pow(ex, se_coeffs[2]));
       //  dont scale by 1/sqrt(4*pi) - done by init_amp_transform
     } else {
       assert(signals.size() == sh_coeffs.size() && signals.size() == t_mat.rows());
       for (size_t i = 0; i < diffusivities.size(); i++)
-        signals(i) = se_coeffs[0] * exp(-std::pow(bval * diffusivities[i], se_coeffs[3]));
+        signals(i) = se_coeffs[0] * exp(-std::pow((bval/1000.0) * diffusivities[i], se_coeffs[3]));
 
       // convert amp (rf_signal) to zsh coefficients using iZSHT, coeffs = iZSHT * rf_signal
       sh_coeffs.noalias() = t_mat * signals;
@@ -118,20 +119,3 @@ private:
 };
 
 } // namespace MR::DWI::SDeconv
-
-/*
-  Eigen::VectorXd coeffs(const double bval) {
-    if (bval < original_bvals[0])
-      throw Exception("bvalue out of bounds");
-
-    if (bval >= original_bvals.back())
-      return original_coeffs.row(original_coeffs.rows() - 1);
-
-    size_t i = 0;
-    while (bval > original_bvals[i + 1])
-      i++;
-
-    double ratio = (bval - original_bvals[i]) / (original_bvals[i + 1] - original_bvals[i]);
-    return (1.0 - ratio) * original_coeffs.row(i) + ratio * original_coeffs.row(i + 1);
-  }
-*/
