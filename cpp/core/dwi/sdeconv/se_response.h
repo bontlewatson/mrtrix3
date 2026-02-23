@@ -22,13 +22,14 @@
 #include "file/matrix.h"
 #include "math/ZSH.h"
 #include "math/math.h"
+#include "math/legendre.h"
 #include "mrtrix.h"
 
 namespace MR::DWI::SDeconv {
 
 class SEResponse {
 
-  // DO: output intensities comp 
+  // DO: output intensities comp
 public:
   SEResponse() {}
   SEResponse(const std::string &filename) { load(filename); }
@@ -62,10 +63,16 @@ public:
 
     if (is_isotropic())
       return;
-    
+
     size_t num_elev = Math::ZSH::NforL(tissue_lmax);
     diffusivities.resize(num_elev);
     std::vector<double> elevation(num_elev);
+
+    Eigen::VectorXd alp (2*Math::ZSH::NforL(tissue_lmax));
+    Math::Legendre::Plm_sph (alp, tissue_lmax, 0, 1.0);
+    Eigen::VectorXd sh2rh (Math::ZSH::NforL(tissue_lmax));
+    for (size_t l = 0; l <= tissue_lmax; l += 2)
+      sh2rh[l/2] = 1.0 / alp[l];
 
     // evaluate at elevations evenly distributed between [0,pi/2]
     for (size_t i = 0; i < num_elev; i++){
@@ -77,8 +84,8 @@ public:
     }
     // convert amp (rf_signal) to zsh coefficients using iZSHT, coeffs = iZSHT * rf_signal
     Eigen::MatrixXd transform = Math::ZSH::init_amp_transform<double>(elevation, tissue_lmax);
-    t_mat = transform.inverse();
-    
+    t_mat = sh2rh.asDiagonal() * transform.inverse();
+
   }
 
   // load response file, set parameters and lmax:
