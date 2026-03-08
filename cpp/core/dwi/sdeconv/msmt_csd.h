@@ -29,6 +29,7 @@
 
 #include "dwi/directions/predefined.h"
 
+
 namespace MR::DWI::SDeconv {
 
   constexpr uint32_t default_msmt_lmax = 8;
@@ -71,8 +72,7 @@ namespace MR::DWI::SDeconv {
                 responses.push_back (File::Matrix::load_matrix(s));
               } catch (Exception &e) {
                 try {
-                  se_responses.push_back (SEResponse (s)); // sets model param & the lmax for tissue
-                                                           //lmax_response.push_back(se_responses.back().tissue_lmax);
+                  se_responses.push_back (SEResponse (s)); // setsmodel param & the lmax for tissue
                 } catch (Exception &e) {
                   throw Exception(e, "File \"" + s + "\" is not a valid response function file");
                 }
@@ -170,10 +170,9 @@ namespace MR::DWI::SDeconv {
                   shell_for_vol[vols[idx]] = shell_idx;
               }
             } else {
-              // set up SE responses (lmax in particular):
+              // set up per-tissue SE responses:
               for (int t = 0; t != num_tissues(); ++t)
                 se_responses[t].init(lmax[t]);
-
             }
 
             size_t pbegin = 0;
@@ -187,6 +186,7 @@ namespace MR::DWI::SDeconv {
               for (size_t vol = 0; vol < grad.rows(); ++vol) {
                 const size_t shell_idx = responses.size() ? shell_for_vol[vol] : 0;
                 if (responses.empty())
+                  // computes se SH->RH coefficients for each (b,g)
                   se_responses[tissue_idx].compute_SH_coeff(se_R, workspace, grad(vol,3));
 
                 int li = 0;

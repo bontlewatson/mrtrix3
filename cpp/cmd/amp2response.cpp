@@ -29,6 +29,8 @@
 #include "math/rng.h"
 #include "math/sphere.h"
 #include "types.h"
+#include <algorithm>
+#include <unsupported/Eigen/NonLinearOptimization>
 
 using namespace MR;
 using namespace App;
@@ -74,6 +76,9 @@ void usage() {
     + Option ("lmax", "specify the maximum harmonic degree of the response function to estimate"
                       " (can be a comma-separated list for multi-shell data)")
       + Argument ("values").type_sequence_int();
+    
+    // TODO: add an option to implement se instead of ols 
+    + Option ("stretchedexp", "implement stretched exponential model to estimate the response function");
 
   REFERENCES
     + "Smith, R. E.; Dhollander, T. & Connelly, A. " // Internal
@@ -125,22 +130,41 @@ public:
           b(Eigen::VectorXd::Zero(M.rows())),
           count(0) {}
 
+    // TODO: constructor for SE implementation
+    Shared(uint32_t lmax,
+           const std::vector<size_t> &volumes,
+           const Eigen::MatrixXd &dirs,
+           const Eigen::VectorXd bvalues)
+        : lmax(lmax), volumes(volumes), dirs(dirs), bvalues(bvalues), count(0) {}
+
     const int lmax;
     const Eigen::MatrixXd &dirs;
     const std::vector<size_t> &volumes;
     Eigen::MatrixXd M;
     Eigen::VectorXd b;
     size_t count;
+    // LM algo needs (amp, bval, elev) for all voxels in mask
+    const Eigen::VectorXd bvalues; // from grad table
+    Eigen::VectorXd amplitudes, elevations;
   };
 
   Accumulator(Shared &shared)
       : S(shared), amplitudes(S.volumes.size()), b(S.b), M(S.M), count(0), rotated_dirs_cartesian(S.dirs.rows(), 3) {}
 
+  // TODO: account for se model implementation
+  Accumulator(Shared &shared, bool use_se)
+      : S(shared), use_se(use_se), count(0), rotated_dirs_cartesian(S.dirs.rows(), 3) {}
+
   ~Accumulator() {
     // accumulate results from all threads:
-    S.M += M;
-    S.b += b;
-    S.count += count;
+    if (!use_se) {
+      S.M += M;
+      S.b += b;
+    } else if (use_se) {
+      S.amplitudes += amplitudes;
+      S.elevations += elevations;
+    } else
+      S.count += count;
   }
 
   void operator()(Image<float> &amp_image, Image<float> &dir_image, Image<bool> &mask) {
@@ -172,27 +196,100 @@ public:
         }
       }
 
-      // Generate the ZSH -> amplitude transform
-      transform = Math::ZSH::init_amp_transform<default_type>(rotated_dirs_azin.col(1), S.lmax);
+      if (use_se) {
+        for (size_t i = 0; i != S.volumes.size(); ++i) {
+          amp_image.index(3) = S.volumes[i];
+          amplitudes[i] = amp_image.value();
+          elevations[i] = rotated_dirs_azin(i, 1);
+        }
+      } else {
+        // Generate the ZSH -> amplitude transform
+        transform = Math::ZSH::init_amp_transform<default_type>(rotated_dirs_azin.col(1), S.lmax);
 
-      // Grab the image data
-      for (size_t i = 0; i != S.volumes.size(); ++i) {
-        amp_image.index(3) = S.volumes[i];
-        amplitudes[i] = amp_image.value();
+        // Grab the image data
+        for (size_t i = 0; i != S.volumes.size(); ++i) {
+          amp_image.index(3) = S.volumes[i];
+          amplitudes[i] = amp_image.value();
+        }
+
+        // accumulate results:
+        b += transform.transpose() * amplitudes;
+        M.selfadjointView<Eigen::Lower>().rankUpdate(transform.transpose());
       }
-
-      // accumulate results:
-      b += transform.transpose() * amplitudes;
-      M.selfadjointView<Eigen::Lower>().rankUpdate(transform.transpose());
     }
   }
 
 protected:
   Shared &S;
-  Eigen::VectorXd amplitudes, b;
+  bool use_se;
+  Eigen::VectorXd amplitudes, b, elevations;
   Eigen::MatrixXd M, transform;
   size_t count;
   Eigen::Matrix<default_type, Eigen::Dynamic, 3> rotated_dirs_cartesian;
+};
+
+// stretched exponential functor for levenberg-marquardt algorithm
+struct LMFunctor {
+  const Eigen::VectorXd &signal, &bval, &elevation;
+  int m, n;
+
+  LMFunctor(const Eigen::VectorXd &s, const Eigen::VectorXd &b, const Eigen::VectorXd &el) : signal(s), bval(b), elevation(el) {}
+
+  // number of data points
+  int values() const { return m; }
+  // number of model parameters
+  int inputs() const { return n; }
+
+  // compute residuals
+  void operator()(const Eigen::VectorXd &x, Eigen::VectorXd &fvec) const {
+    for (size_t i = 0; i < signal.size(); ++i) {
+      double estimate;
+      //  alpha must lie between [0,1]
+      double alpha = std::clamp(x[n - 1], 0.0, 1.0);
+
+      if (n == 3) {
+        // x = [s0, Dapp, alpha]
+        estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * x[1], alpha));
+      } else {
+        // x = [s0, D_ax, D_rad, alpha]
+        double cel = std::cos(elevation[i]);
+        double sel = std::sin(elevation[i]);
+        double diffusivity = x[1] * (cel * cel) + x[2] * (sel * sel);
+        estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * diffusivity, alpha));
+      }
+      fvec[i] = signal[i] - estimate;
+    }
+  }
+  // compute jacobian of the residuals
+  int df(const Eigen::VectorXd &x, Eigen::MatrixXd &fjac) const {
+    double epsilon = 10e-10; // for numerical stability
+    double alpha = std::clamp(x[n - 1], 0.0, 1.0);
+    for (size_t i = 0; i < signal.size(); ++i) {
+      double bb = bval[i] / 1000.0;
+      if (n == 3) {
+        // j = [ df/ d(S0), df/d(D_app), df/d(alpha)]
+        double exponent = exp(-std::pow(bb * x[1], alpha));
+        double bD = std::max(bb * x[1], epsilon);
+
+        fjac(i, 0) = -exponent;
+        fjac(i, 1) = x[0] * exponent * alpha * std::pow(bD, alpha - 1) * bb;
+        fjac(i, 2) = x[0] * exponent * std::pow(bD, alpha - 1) * std::log(bD);
+      } else {
+        // j = [ df/ d(S0), df/d(D_ax), df/d(D_rad), df/d(alpha)]
+        double cel = std::cos(elevation[i]);
+        double sel = std::sin(elevation[i]);
+        double diffusivity = x[1] * (cel * cel) + x[2] * (sel * sel);
+        double exponent = exp(-std::pow(bb * diffusivity, alpha));
+        double bD = std::max(bb * diffusivity, epsilon);
+
+        fjac(i, 0) = -exponent;
+        fjac(i, 1) = x[0] * exponent * alpha * std::pow(bD, alpha - 1) * bb * (cel * cel);
+        fjac(i, 2) = x[0] * exponent * alpha * std::pow(bD, alpha - 1) * bb * (sel * sel);
+        fjac(i, 3) = x[0] * exponent * std::pow(bD, alpha) * std::log(bD);
+      }
+    }
+    return 0;
+  }
 };
 
 void run() {
@@ -204,6 +301,8 @@ void run() {
   std::vector<Eigen::MatrixXd> dirs_azin;
   std::vector<std::vector<size_t>> volumes;
   std::unique_ptr<DWI::Shells> shells;
+  // store bvalues for se model
+  Eigen::VectorXd bvalues;
 
   auto opt = get_options("directions");
   if (!opt.empty()) {
@@ -226,6 +325,9 @@ void run() {
       volumes.push_back(all_volumes(dirs_azin.size()));
     } else {
       auto grad = DWI::get_DW_scheme(header);
+      // extract b values
+      for (size_t i = 0; i < grad.size(); ++i)
+        bvalues[i] = grad(i, 3);
       shells.reset(new DWI::Shells(grad));
       shells->select_shells(false, false, false);
       for (size_t i = 0; i != shells->count(); ++i) {
@@ -294,76 +396,153 @@ void run() {
 
   const bool use_ols = !get_options("noconstraint").empty();
 
-  CONSOLE(std::string("estimating response function using ") + (use_ols ? "ordinary" : "constrained") +
-          " least-squares from " + str(num_voxels) + " voxels");
+  // TODO: parse the se model option
+  const bool use_se = !get_options("stretchedexp").empty();
 
-  Eigen::MatrixXd responses(dirs_azin.size(), Math::ZSH::NforL(max_lmax));
+  // response estiamtion for shell structure:
+  if (!use_se) {
+    CONSOLE(std::string("estimating response function using ") + (use_ols ? "ordinary" : "constrained") +
+            " least-squares from " + str(num_voxels) + " voxels");
 
-  for (size_t shell_index = 0; shell_index != dirs_azin.size(); ++shell_index) {
+    Eigen::MatrixXd responses(dirs_azin.size(), Math::ZSH::NforL(max_lmax));
 
-    // check the ZSH -> amplitude transform upfront:
-    {
-      auto transform = Math::ZSH::init_amp_transform<default_type>(dirs_azin[shell_index].col(1), lmax[shell_index]);
-      if (!transform.allFinite()) {
-        Exception e("Unable to construct A2SH transformation for shell b=" +
-                    str(static_cast<ssize_t>(std::round((*shells)[shell_index].get_mean()))) + ";");
-        e.push_back("  lmax (" + str(lmax[shell_index]) + ") may be too large for this shell");
-        if (!shell_index && (*shells)[0].is_bzero())
-          e.push_back("  (this appears to be a b=0 shell, and therefore lmax should be set to 0 for this shell)");
-        throw e;
+    for (size_t shell_index = 0; shell_index != dirs_azin.size(); ++shell_index) {
+
+      // check the ZSH -> amplitude transform upfront:
+      {
+        auto transform = Math::ZSH::init_amp_transform<default_type>(dirs_azin[shell_index].col(1), lmax[shell_index]);
+        if (!transform.allFinite()) {
+          Exception e("Unable to construct A2SH transformation for shell b=" +
+                      str(static_cast<ssize_t>(std::round((*shells)[shell_index].get_mean()))) + ";");
+          e.push_back("  lmax (" + str(lmax[shell_index]) + ") may be too large for this shell");
+          if (!shell_index && (*shells)[0].is_bzero())
+            e.push_back("  (this appears to be a b=0 shell, and therefore lmax should be set to 0 for this shell)");
+          throw e;
+        }
+      }
+
+      auto dirs_cartesian = Math::Sphere::spherical2cartesian(dirs_azin[shell_index]);
+
+      Accumulator::Shared shared(lmax[shell_index], volumes[shell_index], dirs_cartesian);
+      ThreadedLoop(image, 0, 3).run(Accumulator(shared), image, dir_image, mask);
+
+      Eigen::VectorXd rf;
+      // Is this anything other than an isotropic response?
+
+      if (!lmax[shell_index] || use_ols) {
+
+        rf = shared.M.llt().solve(shared.b);
+
+      } else {
+
+        // Generate the constraint matrix
+        // We are going to both constrain the amplitudes to be non-negative, and constrain the derivatives to be
+        // non-negative
+        const size_t num_angles_constraint = 90;
+        Eigen::VectorXd els(num_angles_constraint + 1);
+        for (size_t i = 0; i <= num_angles_constraint; ++i)
+          els[i] = static_cast<default_type>(i) * Math::pi / 180.0;
+        auto amp_transform = Math::ZSH::init_amp_transform<default_type>(els, lmax[shell_index]);
+        auto deriv_transform = Math::ZSH::init_deriv_transform<default_type>(els, lmax[shell_index]);
+
+        Eigen::MatrixXd constraints(amp_transform.rows() + deriv_transform.rows(), amp_transform.cols());
+        constraints.block(0, 0, amp_transform.rows(), amp_transform.cols()) = amp_transform;
+        constraints.block(amp_transform.rows(), 0, deriv_transform.rows(), deriv_transform.cols()) = deriv_transform;
+
+        // Initialise the problem solver
+        auto problem =
+            Math::ICLS::Problem<default_type>(shared.M, constraints, Eigen::VectorXd(), 0, 1e-10, 1e-10, 0, 0.0, true);
+        auto solver = Math::ICLS::Solver<default_type>(problem);
+
+        // Estimate the solution
+        const size_t niter = solver(rf, shared.b);
+        INFO("constrained least-squares solver completed in " + str(niter) + " iterations");
+      }
+
+      CONSOLE("  b=" + str((*shells)[shell_index].get_mean(), 4) + ": [" + str(rf.transpose().cast<float>()) + "]");
+
+      rf.conservativeResizeLike(Eigen::VectorXd::Zero(Math::ZSH::NforL(max_lmax)));
+      responses.row(shell_index) = rf;
+    }
+
+    KeyValues keyvals;
+    if (shells) {
+      std::string line = str<int>((*shells)[0].get_mean());
+      for (size_t i = 1; i != (*shells).count(); ++i)
+        line += "," + str<int>((*shells)[i].get_mean());
+      keyvals["Shells"] = line;
+    }
+    File::Matrix::save_matrix(responses, argument[3], keyvals);
+
+  } else if(use_se){
+
+    CONSOLE(std::string("estimating response function using the stretched exponential from ") + str(num_voxels) +
+            " voxels");
+
+    // response estimation for no shell structure (se):
+    int nparam = (max_lmax == 0) ? 3 : 4;
+
+    // concatenate directions for all shells into one matrix:
+    size_t total_directions = 0; // all directions across shells
+    for (const auto &shells : dirs_azin)
+      total_directions += shells.rows();
+
+    Eigen::MatrixXd all_az_dirs(total_directions, 2);
+    size_t rr = 0;
+    for (const auto &shells : dirs_azin) {
+      all_az_dirs.block(rr, 0, shells.rows(), 2) = shells;
+      rr += shells.rows();
+    }
+
+    auto total_cartesian = Math::Sphere::spherical2cartesian(all_az_dirs);
+
+    Accumulator::Shared shared(max_lmax, all_volumes(total_directions), total_cartesian, bvalues);
+    ThreadedLoop(image, 0, 3).run(Accumulator(shared, use_se), image, dir_image, mask);
+
+    Eigen::VectorXd responses(nparam);
+
+    // levenberg-marquart solver:
+    LMFunctor functor(shared.amplitudes, shared.bvalues, shared.elevations);
+    functor.m = shared.amplitudes.size();
+    functor.n = nparam;
+
+    // initial guesses:
+    Eigen::VectorXd x0(nparam);
+    double s0 = 0.0;
+    int N = 0;
+    for (int i = 0; i < shared.bvalues.size(); ++i) {
+      if (shared.bvalues[i] == 0.0) {
+        s0 += shared.amplitudes[i];
+        N++;
       }
     }
-
-    auto dirs_cartesian = Math::Sphere::spherical2cartesian(dirs_azin[shell_index]);
-
-    Accumulator::Shared shared(lmax[shell_index], volumes[shell_index], dirs_cartesian);
-    ThreadedLoop(image, 0, 3).run(Accumulator(shared), image, dir_image, mask);
-
-    Eigen::VectorXd rf;
-    // Is this anything other than an isotropic response?
-
-    if (!lmax[shell_index] || use_ols) {
-
-      rf = shared.M.llt().solve(shared.b);
-
+    x0[0] = (N > 0) ? (s0 / N) : shared.amplitudes.maxCoeff();
+    if (nparam == 3) {
+      x0[1] = 1.0;
+      x0[2] = 0.8;
     } else {
-
-      // Generate the constraint matrix
-      // We are going to both constrain the amplitudes to be non-negative, and constrain the derivatives to be
-      // non-negative
-      const size_t num_angles_constraint = 90;
-      Eigen::VectorXd els(num_angles_constraint + 1);
-      for (size_t i = 0; i <= num_angles_constraint; ++i)
-        els[i] = static_cast<default_type>(i) * Math::pi / 180.0;
-      auto amp_transform = Math::ZSH::init_amp_transform<default_type>(els, lmax[shell_index]);
-      auto deriv_transform = Math::ZSH::init_deriv_transform<default_type>(els, lmax[shell_index]);
-
-      Eigen::MatrixXd constraints(amp_transform.rows() + deriv_transform.rows(), amp_transform.cols());
-      constraints.block(0, 0, amp_transform.rows(), amp_transform.cols()) = amp_transform;
-      constraints.block(amp_transform.rows(), 0, deriv_transform.rows(), deriv_transform.cols()) = deriv_transform;
-
-      // Initialise the problem solver
-      auto problem =
-          Math::ICLS::Problem<default_type>(shared.M, constraints, Eigen::VectorXd(), 0, 1e-10, 1e-10, 0, 0.0, true);
-      auto solver = Math::ICLS::Solver<default_type>(problem);
-
-      // Estimate the solution
-      const size_t niter = solver(rf, shared.b);
-      INFO("constrained least-squares solver completed in " + str(niter) + " iterations");
+      x0[1] = 1.0;
+      x0[2] = 1.0;
+      x0[3] = 0.2;
     }
+    // optimisation
+    Eigen::LevenbergMarquardt<LMFunctor> lm(functor);
+    int status = lm.minimize(x0);
+    // convergence
+    if (status <= 0)
+      throw Exception("levenberg-marquardt optimisation was unsuccessful");
 
-    CONSOLE("  b=" + str((*shells)[shell_index].get_mean(), 4) + ": [" + str(rf.transpose().cast<float>()) + "]");
-
-    rf.conservativeResizeLike(Eigen::VectorXd::Zero(Math::ZSH::NforL(max_lmax)));
-    responses.row(shell_index) = rf;
+    CONSOLE("SE model paramters [s0, D, alpha]: [" + str(x0.transpose().cast<float>()) + "]");
+    
+    // TODO: save se response file, i.e. 'SE ...'
+    responses = x0; 
+    std::ostringstream line; 
+    line << "SE"; 
+    for (int i =0; i<nparam;++i)
+      line<< " " << x0[i];
+    std::ofstream file(argument[3]);
+    if (!file)
+      throw Exception(" error writing file for " + argument[3]);
+    file << line.str() << "\n";
+    file.close();
   }
-
-  KeyValues keyvals;
-  if (shells) {
-    std::string line = str<int>((*shells)[0].get_mean());
-    for (size_t i = 1; i != (*shells).count(); ++i)
-      line += "," + str<int>((*shells)[i].get_mean());
-    keyvals["Shells"] = line;
-  }
-  File::Matrix::save_matrix(responses, argument[3], keyvals);
-}

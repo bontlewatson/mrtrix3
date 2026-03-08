@@ -29,7 +29,6 @@ namespace MR::DWI::SDeconv {
 
 class SEResponse {
 
-  // DO: output intensities comp
 public:
   SEResponse() {}
   SEResponse(const std::string &filename) { load(filename); }
@@ -48,7 +47,7 @@ public:
       for (size_t i = 0; i < diffusivities.size(); i++)
         signals(i) = se_coeffs[0] * exp(-std::pow((bval/1000.0) * diffusivities[i], se_coeffs[3]));
 
-      // convert amp (rf_signal) to zsh coefficients using iZSHT, coeffs = iZSHT * rf_signal
+      // convert amp (rf_signal) to zsh coefficients using iZSHT: coeffs = iZSHT * rf_signal
       sh_coeffs.noalias() = t_mat * signals;
     }
 
@@ -56,7 +55,7 @@ public:
 
   // check for isotropy (i.e. 3 model parameters)
   bool is_isotropic() const { return se_coeffs.size() == 3; }
-
+ 
   void init(int tissue_lmax) {
     if (tissue_lmax > 0 && is_isotropic())
       throw Exception("cannot use non-zero lmax for isotropic response");
@@ -84,6 +83,7 @@ public:
     }
     // convert amp (rf_signal) to zsh coefficients using iZSHT, coeffs = iZSHT * rf_signal
     Eigen::MatrixXd transform = Math::ZSH::init_amp_transform<double>(elevation, tissue_lmax);
+    // sh -> rh transformation
     t_mat = sh2rh.asDiagonal() * transform.inverse();
 
   }
