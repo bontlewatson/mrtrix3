@@ -241,7 +241,7 @@ struct LMFunctor {
   int inputs() const { return n; }
 
   // compute residuals
-  void operator()(const Eigen::VectorXd &x, Eigen::VectorXd &fvec) const {
+  int operator()(const Eigen::VectorXd &x, Eigen::VectorXd &fvec) const {
     for (size_t i = 0; i < signal.size(); ++i) {
       double estimate;
       //  alpha must lie between [0,1]
@@ -259,6 +259,7 @@ struct LMFunctor {
       }
       fvec[i] = signal[i] - estimate;
     }
+    return 0; 
   }
   // compute jacobian of the residuals
   int df(const Eigen::VectorXd &x, Eigen::MatrixXd &fjac) const {
@@ -546,3 +547,5 @@ void run() {
     file << line.str() << "\n";
     file.close();
   }
+}
+
