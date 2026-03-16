@@ -32,6 +32,20 @@
 #include <algorithm>
 #include <unsupported/Eigen/NonLinearOptimization>
 
+static void append(Eigen::VectorXd &shared, const Eigen::VectorXd &accumulate){
+  Eigen::Index s_length = shared.size();
+  shared.conservativeResize(s_length + accumulate.size());
+  shared.tail(accumulate.size())=accumulate;
+}
+
+// signal approximation accounting for Rician Noise present 
+inline double add_noise_bias(double clean, double noiseStd){
+  double rp=2.25;
+  //ensure non=zero signals
+  double t = std::pow(std::abs(clean)/noiseStd,rp); 
+  return noiseStd* std::pow(t+1.65,1.0/rp);
+}
+
 using namespace MR;
 using namespace App;
 
@@ -56,11 +70,12 @@ void usage() {
      " the command will generate a response function for every b-value shell"
      " (including b=0 if present).";
 
+  
   ARGUMENTS
     + Argument ("amps", "the amplitudes image").type_image_in()
     + Argument ("mask", "the mask containing the voxels from which to estimate the response function").type_image_in()
     + Argument ("directions", "a 4D image containing the estimated fibre directions").type_image_in()
-    + Argument ("response", "the output zonal spherical harmonic coefficients").type_file_out();
+    + Argument ("response", "the output zonal spherical harmonic coefficients, or stretched exponential model paramters (for se case)").type_file_out();
 
   OPTIONS
     + Option ("isotropic", "estimate an isotropic response function (lmax=0 for all shells)")
@@ -70,15 +85,14 @@ void usage() {
     + Option ("directions", "provide an external text file"
                             " containing the directions along which the amplitudes are sampled")
       + Argument("path").type_file_in()
+    
+    + Option ("stretchedexp", "implement stretched exponential model to estimate the response function")
 
     + DWI::ShellsOption
 
     + Option ("lmax", "specify the maximum harmonic degree of the response function to estimate"
                       " (can be a comma-separated list for multi-shell data)")
       + Argument ("values").type_sequence_int();
-    
-    // TODO: add an option to implement se instead of ols 
-    + Option ("stretchedexp", "implement stretched exponential model to estimate the response function");
 
   REFERENCES
     + "Smith, R. E.; Dhollander, T. & Connelly, A. " // Internal
@@ -118,6 +132,7 @@ std::vector<size_t> all_volumes(const size_t num) {
   return result;
 }
 
+// standard msmt-csd implmentation
 class Accumulator {
 public:
   class Shared {
@@ -130,41 +145,22 @@ public:
           b(Eigen::VectorXd::Zero(M.rows())),
           count(0) {}
 
-    // TODO: constructor for SE implementation
-    Shared(uint32_t lmax,
-           const std::vector<size_t> &volumes,
-           const Eigen::MatrixXd &dirs,
-           const Eigen::VectorXd bvalues)
-        : lmax(lmax), volumes(volumes), dirs(dirs), bvalues(bvalues), count(0) {}
-
     const int lmax;
     const Eigen::MatrixXd &dirs;
     const std::vector<size_t> &volumes;
     Eigen::MatrixXd M;
     Eigen::VectorXd b;
     size_t count;
-    // LM algo needs (amp, bval, elev) for all voxels in mask
-    const Eigen::VectorXd bvalues; // from grad table
-    Eigen::VectorXd amplitudes, elevations;
   };
 
   Accumulator(Shared &shared)
       : S(shared), amplitudes(S.volumes.size()), b(S.b), M(S.M), count(0), rotated_dirs_cartesian(S.dirs.rows(), 3) {}
 
-  // TODO: account for se model implementation
-  Accumulator(Shared &shared, bool use_se)
-      : S(shared), use_se(use_se), count(0), rotated_dirs_cartesian(S.dirs.rows(), 3) {}
-
   ~Accumulator() {
     // accumulate results from all threads:
-    if (!use_se) {
-      S.M += M;
-      S.b += b;
-    } else if (use_se) {
-      S.amplitudes += amplitudes;
-      S.elevations += elevations;
-    } else
-      S.count += count;
+    S.M += M;
+    S.b += b;
+    S.count += count;
   }
 
   void operator()(Image<float> &amp_image, Image<float> &dir_image, Image<bool> &mask) {
@@ -196,97 +192,180 @@ public:
         }
       }
 
-      if (use_se) {
-        for (size_t i = 0; i != S.volumes.size(); ++i) {
-          amp_image.index(3) = S.volumes[i];
-          amplitudes[i] = amp_image.value();
-          elevations[i] = rotated_dirs_azin(i, 1);
-        }
-      } else {
-        // Generate the ZSH -> amplitude transform
-        transform = Math::ZSH::init_amp_transform<default_type>(rotated_dirs_azin.col(1), S.lmax);
+      // Generate the ZSH -> amplitude transform
+      transform = Math::ZSH::init_amp_transform<default_type>(rotated_dirs_azin.col(1), S.lmax);
 
-        // Grab the image data
-        for (size_t i = 0; i != S.volumes.size(); ++i) {
-          amp_image.index(3) = S.volumes[i];
-          amplitudes[i] = amp_image.value();
-        }
-
-        // accumulate results:
-        b += transform.transpose() * amplitudes;
-        M.selfadjointView<Eigen::Lower>().rankUpdate(transform.transpose());
+      // Grab the image data
+      for (size_t i = 0; i != S.volumes.size(); ++i) {
+        amp_image.index(3) = S.volumes[i];
+        amplitudes[i] = amp_image.value();
       }
+
+      // accumulate results:
+      b += transform.transpose() * amplitudes;
+      M.selfadjointView<Eigen::Lower>().rankUpdate(transform.transpose());
     }
   }
 
 protected:
   Shared &S;
-  bool use_se;
-  Eigen::VectorXd amplitudes, b, elevations;
+  Eigen::VectorXd b, amplitudes;
   Eigen::MatrixXd M, transform;
+  size_t count;
+  Eigen::Matrix<default_type, Eigen::Dynamic, 3> rotated_dirs_cartesian;
+};
+
+// SE implementation
+class SE_Accumulator {
+public:
+  class SE_Shared {
+  public:
+    SE_Shared(uint32_t max_lmax,
+              const std::vector<size_t> &volumes,
+              const Eigen::MatrixXd &dirs,
+              const Eigen::VectorXd bvalues)
+        : lmax(max_lmax), volumes(volumes), dirs(dirs), bvalues(bvalues), count(0) {}
+
+    const int lmax;
+    const Eigen::MatrixXd &dirs;
+    const std::vector<size_t> &volumes;
+    size_t count;
+    // LM algo needs (amp, bval, elev) for all voxels in mask
+    const Eigen::VectorXd bvalues; // from grad table
+    Eigen::VectorXd amplitudes, cos_elevations,sin_elevations;
+  };
+
+  SE_Accumulator(SE_Shared &shared) : S(shared), count(0), rotated_dirs_cartesian(S.dirs.rows(), 3) {}
+
+  ~SE_Accumulator() {
+    // accumulate results from all threads:
+    append(S.amplitudes,amplitudes);
+    append(S.sin_elevations,sin_elevations);
+    append(S.cos_elevations,cos_elevations);
+    S.count += count;
+  }
+
+  void operator()(Image<float> &amp_image, Image<float> &dir_image, Image<bool> &mask) {
+    if (mask.value()) {
+      ++count;
+
+      // Grab the fibre direction
+      Eigen::Vector3d fibre_dir;
+      for (dir_image.index(3) = 0; dir_image.index(3) != 3; ++dir_image.index(3))
+        fibre_dir[dir_image.index(3)] = dir_image.value();
+      fibre_dir.normalize();
+
+      // Rotate the directions into a new reference frame,
+      //   where the Z axis is defined by the specified direction
+      auto R = gen_rotation_matrix(fibre_dir);
+      rotated_dirs_cartesian.transpose() = R * S.dirs.transpose();
+
+      // Convert directions from Euclidean space to azimuth/inclination pairs
+      Eigen::MatrixXd rotated_dirs_azin = Math::Sphere::cartesian2spherical(rotated_dirs_cartesian);
+
+      // Constrain inclinations to between 0 and pi/2
+      for (ssize_t i = 0; i != rotated_dirs_azin.rows(); ++i) {
+        if (rotated_dirs_azin(i, 1) > Math::pi_2) {
+          if (rotated_dirs_azin(i, 0) > Math::pi)
+            rotated_dirs_azin(i, 0) -= Math::pi;
+          else
+            rotated_dirs_azin(i, 0) += Math::pi;
+          rotated_dirs_azin(i, 1) = Math::pi - rotated_dirs_azin(i, 1);
+        }
+      }
+      for (size_t i = 0; i != S.volumes.size(); ++i) {
+        amp_image.index(3) = S.volumes[i];
+        amplitudes[i] = amp_image.value();
+        double elevation = rotated_dirs_azin(i, 1);
+        sin_elevations[i]=std::sin(elevation);
+        cos_elevations[i]=std::cos(elevation);
+      }
+    }
+  }
+
+protected:
+  SE_Shared &S;
+  Eigen::VectorXd amplitudes, cos_elevations,sin_elevations;
   size_t count;
   Eigen::Matrix<default_type, Eigen::Dynamic, 3> rotated_dirs_cartesian;
 };
 
 // stretched exponential functor for levenberg-marquardt algorithm
 struct LMFunctor {
-  const Eigen::VectorXd &signal, &bval, &elevation;
+  const Eigen::VectorXd &signal, &bval, &sin_elevations, cos_elevations;
+  double noiseStd; 
   int m, n;
 
-  LMFunctor(const Eigen::VectorXd &s, const Eigen::VectorXd &b, const Eigen::VectorXd &el) : signal(s), bval(b), elevation(el) {}
+  LMFunctor(const Eigen::VectorXd &s, const Eigen::VectorXd &b, const Eigen::VectorXd &sin_el,
+      const Eigen::VectorXd &cos_el, double noiseStd)
+      : signal(s), bval(b), sin_elevations(sin_el), cos_elevations(cos_el), noiseStd(noiseStd) {}
 
   // number of data points
   int values() const { return m; }
   // number of model parameters
   int inputs() const { return n; }
 
+  inline double deriv_bias(double estimate) const {
+    double rp = 2.25;
+    double tt = std::abs(estimate)/noiseStd; 
+    // d(biased_estimate)/d(estimate)
+    double factor = std::pow(tt,rp - 1.0) * std::pow(tt +1.65,1.0/rp - 1.0);
+    return factor*((estimate >= 0 ) ? 1.0 : -1.0);
+  }
+
   // compute residuals
   int operator()(const Eigen::VectorXd &x, Eigen::VectorXd &fvec) const {
     for (size_t i = 0; i < signal.size(); ++i) {
       double estimate;
       //  alpha must lie between [0,1]
-      double alpha = std::clamp(x[n - 1], 0.0, 1.0);
+      //double alpha = std::clamp(x[n - 1], 0.0, 1.0);
 
       if (n == 3) {
         // x = [s0, Dapp, alpha]
-        estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * x[1], alpha));
+        estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * x[1], x[2]));
       } else {
         // x = [s0, D_ax, D_rad, alpha]
-        double cel = std::cos(elevation[i]);
-        double sel = std::sin(elevation[i]);
+        double cel = cos_elevations[i];
+        double sel = sin_elevations[i];
         double diffusivity = x[1] * (cel * cel) + x[2] * (sel * sel);
-        estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * diffusivity, alpha));
+        estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * diffusivity, x[3]));
       }
-      fvec[i] = signal[i] - estimate;
+      fvec[i] = signal[i] - add_noise_bias(estimate,noiseStd);
     }
-    return 0; 
+    return 0;
   }
   // compute jacobian of the residuals
   int df(const Eigen::VectorXd &x, Eigen::MatrixXd &fjac) const {
     double epsilon = 10e-10; // for numerical stability
-    double alpha = std::clamp(x[n - 1], 0.0, 1.0);
+    // return very high value if outside of the bounds - check if the constrai is necessary to fit
+    //double alpha = std::clamp(x[n - 1], 0.0, 1.0);
     for (size_t i = 0; i < signal.size(); ++i) {
       double bb = bval[i] / 1000.0;
       if (n == 3) {
-        // j = [ df/ d(S0), df/d(D_app), df/d(alpha)]
-        double exponent = exp(-std::pow(bb * x[1], alpha));
+        // j = [ df/ d(S0), df/d(D_app), df/d(alpha)], scale jacobian by der of the bias
+        double exponent = exp(-std::pow(bb * x[1], x[2]));
         double bD = std::max(bb * x[1], epsilon);
+        double estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * x[1], x[2]));
+        double d_bias = deriv_bias(estimate);
 
-        fjac(i, 0) = -exponent;
-        fjac(i, 1) = x[0] * exponent * alpha * std::pow(bD, alpha - 1) * bb;
-        fjac(i, 2) = x[0] * exponent * std::pow(bD, alpha - 1) * std::log(bD);
+        fjac(i, 0) = -d_bias* exponent;
+        fjac(i, 1) = -d_bias* x[0] * exponent * x[2] * std::pow(bD, x[2] - 1) * bb;
+        fjac(i, 2) = -d_bias * x[0] * exponent * std::pow(bD, x[2] - 1) * std::log(bD);
       } else {
-        // j = [ df/ d(S0), df/d(D_ax), df/d(D_rad), df/d(alpha)]
-        double cel = std::cos(elevation[i]);
-        double sel = std::sin(elevation[i]);
+        // j = [ df/ d(S0), df/d(D_ax), df/d(D_rad), df/d(alpha)], scale jacobian by der of the bias
+        double cel = cos_elevations[i];
+        double sel = sin_elevations[i];
         double diffusivity = x[1] * (cel * cel) + x[2] * (sel * sel);
-        double exponent = exp(-std::pow(bb * diffusivity, alpha));
+        double estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * diffusivity, x[3]));
+        
+        double d_bias = deriv_bias(estimate);
+        double exponent = exp(-std::pow(bb * diffusivity, x[3]));
         double bD = std::max(bb * diffusivity, epsilon);
 
-        fjac(i, 0) = -exponent;
-        fjac(i, 1) = x[0] * exponent * alpha * std::pow(bD, alpha - 1) * bb * (cel * cel);
-        fjac(i, 2) = x[0] * exponent * alpha * std::pow(bD, alpha - 1) * bb * (sel * sel);
-        fjac(i, 3) = x[0] * exponent * std::pow(bD, alpha) * std::log(bD);
+        fjac(i, 0) = -d_bias * exponent;
+        fjac(i, 1) = -d_bias * x[0] * exponent * x[3] * std::pow(bD, x[3] - 1) * bb * (cel * cel);
+        fjac(i, 2) = -d_bias * x[0] * exponent * x[3] * std::pow(bD, x[3] - 1) * bb * (sel * sel);
+        fjac(i, 3) = -d_bias * x[0] * exponent * std::pow(bD, x[3]) * std::log(bD);
       }
     }
     return 0;
@@ -326,6 +405,7 @@ void run() {
       volumes.push_back(all_volumes(dirs_azin.size()));
     } else {
       auto grad = DWI::get_DW_scheme(header);
+      bvalues.resize(grad.rows());
       // extract b values
       for (size_t i = 0; i < grad.size(); ++i)
         bvalues[i] = grad(i, 3);
@@ -475,7 +555,7 @@ void run() {
     }
     File::Matrix::save_matrix(responses, argument[3], keyvals);
 
-  } else if(use_se){
+  } else if (use_se) {
 
     CONSOLE(std::string("estimating response function using the stretched exponential from ") + str(num_voxels) +
             " voxels");
@@ -497,13 +577,29 @@ void run() {
 
     auto total_cartesian = Math::Sphere::spherical2cartesian(all_az_dirs);
 
-    Accumulator::Shared shared(max_lmax, all_volumes(total_directions), total_cartesian, bvalues);
-    ThreadedLoop(image, 0, 3).run(Accumulator(shared, use_se), image, dir_image, mask);
+    SE_Accumulator::SE_Shared shared(max_lmax, all_volumes(total_directions), total_cartesian, bvalues);
+    ThreadedLoop(image, 0, 3).run(SE_Accumulator(shared), image, dir_image, mask);
 
     Eigen::VectorXd responses(nparam);
 
+    //noise estimation: 
+    std::vector<size_t> indx; 
+    double bmax = shared.bvalues.maxCoeff();
+    double noiseStd; 
+
+    for (size_t i =0; i<shared.bvalues.size(); ++i){
+      if(shared.bvalues[i]==bmax && std::asin(shared.sin_elevations[i])<0.2)
+        indx.push_back(i);
+    }
+    double mean_maxb_amp = 0.0;
+    for (int i = 0; i < indx.size(); ++i)
+      mean_maxb_amp += shared.amplitudes[i];
+    mean_maxb_amp/= indx.size();
+
+    noiseStd = mean_maxb_amp/add_noise_bias(0.0,1.0);
+
     // levenberg-marquart solver:
-    LMFunctor functor(shared.amplitudes, shared.bvalues, shared.elevations);
+    LMFunctor functor(shared.amplitudes, shared.bvalues, shared.sin_elevations, shared.cos_elevations,noiseStd);
     functor.m = shared.amplitudes.size();
     functor.n = nparam;
 
@@ -534,18 +630,17 @@ void run() {
       throw Exception("levenberg-marquardt optimisation was unsuccessful");
 
     CONSOLE("SE model paramters [s0, D, alpha]: [" + str(x0.transpose().cast<float>()) + "]");
-    
+
     // TODO: save se response file, i.e. 'SE ...'
-    responses = x0; 
-    std::ostringstream line; 
-    line << "SE"; 
-    for (int i =0; i<nparam;++i)
-      line<< " " << x0[i];
+    responses = x0;
     std::ofstream file(argument[3]);
-    if (!file)
-      throw Exception(" error writing file for " + argument[3]);
-    file << line.str() << "\n";
-    file.close();
+    if (!file.is_open())
+      throw Exception("error writing to " + argument[3]);
+    
+    file<< "SE";
+    for (int i = 0; i < nparam; ++i)
+      file << " " << x0[i];
+    file << "\n";
+
   }
 }
-

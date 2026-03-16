@@ -98,6 +98,12 @@ def usage(base_parser, subparsers): #pylint: disable=unused-variable
                        help='Use external dwi2response algorithm for WM single-fibre voxel selection '
                             f'(options: {", ".join(WM_ALGOS)}) '
                             '(default: built-in Dhollander 2019)')
+  options.add_argument('-model',
+                      metavar='model',
+                      choices=['msmt-csd', 'stretchedexp'],
+                      default='msmt-csd',
+                      help='The model used to estimate the response function'
+                            '(default: msmt-csd, other option: stretchedexp)')
 
 
 
@@ -131,6 +137,15 @@ def execute(): #pylint: disable=unused-variable
       raise MRtrixError('Values supplied to the -lmax option must be non-negative.')
     sfwm_lmax_option = ' -lmax ' + ','.join(map(str,sfwm_lmax))
 
+  # get model estiamtion (if provided)
+  model_opt = ''
+  bvalues_opt = bvalues_option
+
+  if app.ARGS.model == 'stretchedexp':
+    model_opt = ' -stretchedexp'
+    # do not need -shells option for stretched exp
+    bvalues_opt = ''
+  app.console(f' Using {app.ARGS.model} model to estimate the response function')
 
   # PREPARATION
   app.console('-------')
@@ -270,7 +285,7 @@ def execute(): #pylint: disable=unused-variable
   app.console(f'   [ CSF: {statrefcsfcount} -> {statvoxcsfcount} ]')
   # Estimate CSF response function
   app.console(' * Estimating response function...')
-  run.command(f'amp2response dwi.mif voxels_csf.mif safe_vecs.mif response_csf.txt {bvalues_option} -isotropic', show=False)
+  run.command(f'amp2response dwi.mif voxels_csf.mif safe_vecs.mif response_csf.txt {bvalues_opt}{model_opt} -isotropic', show=False)
 
   # Get final voxels for GM response function estimation from refined GM.
   app.console('* GM:')
@@ -286,7 +301,7 @@ def execute(): #pylint: disable=unused-variable
   app.console(f'   [ GM: {statrefgmcount} -> {statvoxgmcount} ]')
   # Estimate GM response function
   app.console(' * Estimating response function...')
-  run.command(f'amp2response dwi.mif voxels_gm.mif safe_vecs.mif response_gm.txt {bvalues_option} -isotropic', show=False)
+  run.command(f'amp2response dwi.mif voxels_gm.mif safe_vecs.mif response_gm.txt {bvalues_opt}{model_opt} -isotropic', show=False)
 
   # Get final voxels for single-fibre WM response function estimation from refined WM.
   app.console('* Single-fibre WM:')
@@ -333,7 +348,7 @@ def execute(): #pylint: disable=unused-variable
   app.console(f'   [ WM: {statrefwmcount} -> {statvoxsfwmcount} (single-fibre) ]')
   # Estimate SF WM response function
   app.console(' * Estimating response function...')
-  run.command('amp2response dwi.mif voxels_sfwm.mif safe_vecs.mif response_sfwm.txt' + bvalues_option + sfwm_lmax_option, show=False)
+  run.command(f'amp2response dwi.mif voxels_sfwm.mif safe_vecs.mif response_sfwm.txt {bvalues_opt}{sfwm_lmax_option}{model_opt}', show=False)
 
 
   # OUTPUT AND SUMMARY
