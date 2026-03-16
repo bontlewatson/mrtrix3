@@ -38,11 +38,11 @@ static void append(Eigen::VectorXd &shared, const Eigen::VectorXd &accumulate){
   shared.tail(accumulate.size())=accumulate;
 }
 
-// signal approximation accounting for Rician Noise present 
+// signal approximation accounting for Rician Noise present
 inline double add_noise_bias(double clean, double noiseStd){
   double rp=2.25;
   //ensure non=zero signals
-  double t = std::pow(std::abs(clean)/noiseStd,rp); 
+  double t = std::pow(std::abs(clean)/noiseStd,rp);
   return noiseStd* std::pow(t+1.65,1.0/rp);
 }
 
@@ -70,7 +70,7 @@ void usage() {
      " the command will generate a response function for every b-value shell"
      " (including b=0 if present).";
 
-  
+
   ARGUMENTS
     + Argument ("amps", "the amplitudes image").type_image_in()
     + Argument ("mask", "the mask containing the voxels from which to estimate the response function").type_image_in()
@@ -85,7 +85,7 @@ void usage() {
     + Option ("directions", "provide an external text file"
                             " containing the directions along which the amplitudes are sampled")
       + Argument("path").type_file_in()
-    
+
     + Option ("stretchedexp", "implement stretched exponential model to estimate the response function")
 
     + DWI::ShellsOption
@@ -219,33 +219,38 @@ protected:
 class SE_Accumulator {
 public:
   class SE_Shared {
-  public:
-    SE_Shared(uint32_t max_lmax,
-              const std::vector<size_t> &volumes,
-              const Eigen::MatrixXd &dirs,
-              const Eigen::VectorXd bvalues)
+    public:
+      SE_Shared(uint32_t max_lmax,
+          const std::vector<size_t>& volumes,
+          const Eigen::MatrixXd& dirs,
+          const Eigen::VectorXd& bvalues)
         : lmax(max_lmax), volumes(volumes), dirs(dirs), bvalues(bvalues), count(0) {}
 
-    const int lmax;
-    const Eigen::MatrixXd &dirs;
-    const std::vector<size_t> &volumes;
-    size_t count;
-    // LM algo needs (amp, bval, elev) for all voxels in mask
-    const Eigen::VectorXd bvalues; // from grad table
-    Eigen::VectorXd amplitudes, cos_elevations,sin_elevations;
+      const int lmax;
+      const std::vector<size_t> volumes;
+      const Eigen::MatrixXd dirs;
+      // LM algo needs (amp, bval, elev) for all voxels in mask
+      const Eigen::VectorXd bvalues; // from grad table
+      size_t count;
+      Eigen::VectorXd amplitudes, cos_elevations, sin_elevations;
   };
 
-  SE_Accumulator(SE_Shared &shared) : S(shared), count(0), rotated_dirs_cartesian(S.dirs.rows(), 3) {}
+  SE_Accumulator(SE_Shared &shared) :
+    S(shared), count(0),
+    amplitudes (S.bvalues.size()),
+    cos_elevations (S.bvalues.size()),
+    sin_elevations (S.bvalues.size()),
+    rotated_dirs_cartesian(S.dirs.rows(), 3)  {}
 
   ~SE_Accumulator() {
     // accumulate results from all threads:
-    append(S.amplitudes,amplitudes);
-    append(S.sin_elevations,sin_elevations);
-    append(S.cos_elevations,cos_elevations);
+    append (S.amplitudes, amplitudes);
+    append (S.sin_elevations, sin_elevations);
+    append (S.cos_elevations, cos_elevations);
     S.count += count;
   }
 
-  void operator()(Image<float> &amp_image, Image<float> &dir_image, Image<bool> &mask) {
+  void operator()(Image<float>& amp_image, Image<float>& dir_image, Image<bool>& mask) {
     if (mask.value()) {
       ++count;
 
@@ -284,16 +289,16 @@ public:
   }
 
 protected:
-  SE_Shared &S;
-  Eigen::VectorXd amplitudes, cos_elevations,sin_elevations;
+  SE_Shared& S;
   size_t count;
+  Eigen::VectorXd amplitudes, cos_elevations, sin_elevations;
   Eigen::Matrix<default_type, Eigen::Dynamic, 3> rotated_dirs_cartesian;
 };
 
 // stretched exponential functor for levenberg-marquardt algorithm
 struct LMFunctor {
   const Eigen::VectorXd &signal, &bval, &sin_elevations, cos_elevations;
-  double noiseStd; 
+  double noiseStd;
   int m, n;
 
   LMFunctor(const Eigen::VectorXd &s, const Eigen::VectorXd &b, const Eigen::VectorXd &sin_el,
@@ -307,7 +312,7 @@ struct LMFunctor {
 
   inline double deriv_bias(double estimate) const {
     double rp = 2.25;
-    double tt = std::abs(estimate)/noiseStd; 
+    double tt = std::abs(estimate)/noiseStd;
     // d(biased_estimate)/d(estimate)
     double factor = std::pow(tt,rp - 1.0) * std::pow(tt +1.65,1.0/rp - 1.0);
     return factor*((estimate >= 0 ) ? 1.0 : -1.0);
@@ -357,7 +362,7 @@ struct LMFunctor {
         double sel = sin_elevations[i];
         double diffusivity = x[1] * (cel * cel) + x[2] * (sel * sel);
         double estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * diffusivity, x[3]));
-        
+
         double d_bias = deriv_bias(estimate);
         double exponent = exp(-std::pow(bb * diffusivity, x[3]));
         double bD = std::max(bb * diffusivity, epsilon);
@@ -381,9 +386,9 @@ void run() {
   std::vector<Eigen::MatrixXd> dirs_azin;
   std::vector<std::vector<size_t>> volumes;
   std::unique_ptr<DWI::Shells> shells;
-  // store bvalues for se model
-  Eigen::VectorXd bvalues;
 
+  // TODO: cannot use directions from cmdline or header if stretched
+  // exponential: need b-values too!
   auto opt = get_options("directions");
   if (!opt.empty()) {
     dirs_azin.push_back(File::Matrix::load_matrix(opt[0][0]));
@@ -405,10 +410,6 @@ void run() {
       volumes.push_back(all_volumes(dirs_azin.size()));
     } else {
       auto grad = DWI::get_DW_scheme(header);
-      bvalues.resize(grad.rows());
-      // extract b values
-      for (size_t i = 0; i < grad.size(); ++i)
-        bvalues[i] = grad(i, 3);
       shells.reset(new DWI::Shells(grad));
       shells->select_shells(false, false, false);
       for (size_t i = 0; i != shells->count(); ++i) {
@@ -515,7 +516,6 @@ void run() {
         rf = shared.M.llt().solve(shared.b);
 
       } else {
-
         // Generate the constraint matrix
         // We are going to both constrain the amplitudes to be non-negative, and constrain the derivatives to be
         // non-negative
@@ -575,17 +575,21 @@ void run() {
       rr += shells.rows();
     }
 
-    auto total_cartesian = Math::Sphere::spherical2cartesian(all_az_dirs);
+    DEBUG ("gathering signals in selected voxels...");
 
-    SE_Accumulator::SE_Shared shared(max_lmax, all_volumes(total_directions), total_cartesian, bvalues);
+    SE_Accumulator::SE_Shared shared (max_lmax,
+        all_volumes(total_directions),
+        Math::Sphere::spherical2cartesian(all_az_dirs),
+        DWI::get_DW_scheme(header).col(3));
+
     ThreadedLoop(image, 0, 3).run(SE_Accumulator(shared), image, dir_image, mask);
 
     Eigen::VectorXd responses(nparam);
 
-    //noise estimation: 
-    std::vector<size_t> indx; 
+    //noise estimation:
+    std::vector<size_t> indx;
     double bmax = shared.bvalues.maxCoeff();
-    double noiseStd; 
+    double noiseStd;
 
     for (size_t i =0; i<shared.bvalues.size(); ++i){
       if(shared.bvalues[i]==bmax && std::asin(shared.sin_elevations[i])<0.2)
@@ -597,6 +601,8 @@ void run() {
     mean_maxb_amp/= indx.size();
 
     noiseStd = mean_maxb_amp/add_noise_bias(0.0,1.0);
+
+    DEBUG ("fitting paramters of stretched exponential model to signals...");
 
     // levenberg-marquart solver:
     LMFunctor functor(shared.amplitudes, shared.bvalues, shared.sin_elevations, shared.cos_elevations,noiseStd);
@@ -636,7 +642,7 @@ void run() {
     std::ofstream file(argument[3]);
     if (!file.is_open())
       throw Exception("error writing to " + argument[3]);
-    
+
     file<< "SE";
     for (int i = 0; i < nparam; ++i)
       file << " " << x0[i];
