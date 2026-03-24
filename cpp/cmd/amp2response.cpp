@@ -312,10 +312,10 @@ struct LMFunctor {
 
   inline double deriv_bias(double estimate) const {
     double rp = 2.25;
-    double tt = std::abs(estimate)/noiseStd;
+    double tt = std::max(std::abs(estimate)/noiseStd, 1e-12);
     // d(biased_estimate)/d(estimate)
     double factor = std::pow(tt,rp - 1.0) * std::pow(tt +1.65,1.0/rp - 1.0);
-    return factor*((estimate >= 0 ) ? 1.0 : -1.0);
+    return factor;
   }
 
   // compute residuals
@@ -323,56 +323,62 @@ struct LMFunctor {
     for (size_t i = 0; i < signal.size(); ++i) {
       double estimate;
       //  alpha must lie between [0,1]
-      //double alpha = std::clamp(x[n - 1], 0.0, 1.0);
+      double alpha = std::clamp(x[n - 1], 0.0, 1.0);
 
       if (n == 3) {
         // x = [s0, Dapp, alpha]
-        estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * x[1], x[2]));
+        estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * (x[1]*1000), alpha));
       } else {
         // x = [s0, D_ax, D_rad, alpha]
         double cel = cos_elevations[i];
         double sel = sin_elevations[i];
-        double diffusivity = x[1] * (cel * cel) + x[2] * (sel * sel);
-        estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * diffusivity, x[3]));
+        double diffusivity = (x[1]*1000) * (cel * cel) + (x[2]*1000) * (sel * sel);
+        estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * diffusivity, alpha));
+        // VAR(estimate);
       }
       fvec[i] = signal[i] - add_noise_bias(estimate,noiseStd);
     }
+    VAR(fvec);
     return 0;
   }
+
   // compute jacobian of the residuals
   int df(const Eigen::VectorXd &x, Eigen::MatrixXd &fjac) const {
-    double epsilon = 10e-10; // for numerical stability
+    double epsilon = 10e-10; 
     // return very high value if outside of the bounds - check if the constrai is necessary to fit
-    //double alpha = std::clamp(x[n - 1], 0.0, 1.0);
+    double alpha = std::clamp(x[n - 1], 0.0, 1.0);
     for (size_t i = 0; i < signal.size(); ++i) {
       double bb = bval[i] / 1000.0;
       if (n == 3) {
         // j = [ df/ d(S0), df/d(D_app), df/d(alpha)], scale jacobian by der of the bias
-        double exponent = exp(-std::pow(bb * x[1], x[2]));
-        double bD = std::max(bb * x[1], epsilon);
-        double estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * x[1], x[2]));
+        double exponent = exp(-std::pow(bb * (x[1]*1000), x[2]));
+        double bD = std::max(bb * (x[1]*1000), epsilon); // avoid log(0) for b=0
+        double estimate = x[0] * exp(-std::pow(bb * (x[1]*1000), alpha));
         double d_bias = deriv_bias(estimate);
 
-        fjac(i, 0) = -d_bias* exponent;
-        fjac(i, 1) = -d_bias* x[0] * exponent * x[2] * std::pow(bD, x[2] - 1) * bb;
-        fjac(i, 2) = -d_bias * x[0] * exponent * std::pow(bD, x[2] - 1) * std::log(bD);
+        // VAR(bD); // check for log(0)
+
+        fjac(i, 0) = d_bias* exponent;
+        fjac(i, 1) = -d_bias * x[2] * bb * x[0] * exponent * std::pow(bD, x[2] - 1);
+        fjac(i, 2) = -d_bias * x[0] * exponent * std::pow(bD, x[2]) * std::log(bD);
       } else {
         // j = [ df/ d(S0), df/d(D_ax), df/d(D_rad), df/d(alpha)], scale jacobian by der of the bias
         double cel = cos_elevations[i];
         double sel = sin_elevations[i];
         double diffusivity = x[1] * (cel * cel) + x[2] * (sel * sel);
-        double estimate = x[0] * exp(-std::pow((bval[i] / 1000.0) * diffusivity, x[3]));
+        double estimate = x[0] * exp(-std::pow(bb * diffusivity, alpha));
 
         double d_bias = deriv_bias(estimate);
         double exponent = exp(-std::pow(bb * diffusivity, x[3]));
         double bD = std::max(bb * diffusivity, epsilon);
 
-        fjac(i, 0) = -d_bias * exponent;
-        fjac(i, 1) = -d_bias * x[0] * exponent * x[3] * std::pow(bD, x[3] - 1) * bb * (cel * cel);
-        fjac(i, 2) = -d_bias * x[0] * exponent * x[3] * std::pow(bD, x[3] - 1) * bb * (sel * sel);
-        fjac(i, 3) = -d_bias * x[0] * exponent * std::pow(bD, x[3]) * std::log(bD);
+        fjac(i, 0) = d_bias * exponent;
+        fjac(i, 1) = -d_bias * alpha * bb * x[0] * exponent * (cel * cel) * std::pow(bD, alpha - 1);
+        fjac(i, 2) = -d_bias * alpha * bb * x[0] * exponent * (sel * sel) * std::pow(bD, alpha - 1);
+        fjac(i, 3) = -d_bias * x[0] * exponent * std::pow(bD, alpha) * std::log(bD);
       }
     }
+    //VAR(fjac);
     return 0;
   }
 };
@@ -597,10 +603,11 @@ void run() {
     }
     double mean_maxb_amp = 0.0;
     for (int i = 0; i < indx.size(); ++i)
-      mean_maxb_amp += shared.amplitudes[i];
+      mean_maxb_amp += shared.amplitudes[indx[i]];
     mean_maxb_amp/= indx.size();
 
     noiseStd = mean_maxb_amp/add_noise_bias(0.0,1.0);
+    VAR(noiseStd);
 
     DEBUG ("fitting paramters of stretched exponential model to signals...");
 
@@ -620,21 +627,27 @@ void run() {
       }
     }
     x0[0] = (N > 0) ? (s0 / N) : shared.amplitudes.maxCoeff();
+
     if (nparam == 3) {
-      x0[1] = 1.0;
-      x0[2] = 0.8;
+      x0[1] = 0.002;
+      x0[2] = 0.75;
     } else {
-      x0[1] = 1.0;
-      x0[2] = 1.0;
+      x0[1] = 0.002;
+      x0[2] = 0.003;
       x0[3] = 0.2;
     }
+
+    VAR(x0);
     // optimisation
     Eigen::LevenbergMarquardt<LMFunctor> lm(functor);
+
     int status = lm.minimize(x0);
-    // convergence
+    VAR(status);
+    // TODO: LM convergence checks
     if (status <= 0)
       throw Exception("levenberg-marquardt optimisation was unsuccessful");
 
+    INFO("levenberg-marquardt solver completed in " + std::to_string(lm.iter) + " iterations");
     CONSOLE("SE model paramters [s0, D, alpha]: [" + str(x0.transpose().cast<float>()) + "]");
 
     // TODO: save se response file, i.e. 'SE ...'
