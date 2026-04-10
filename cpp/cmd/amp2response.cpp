@@ -32,20 +32,6 @@
 #include <algorithm>
 #include <unsupported/Eigen/NonLinearOptimization>
 
-static void append(Eigen::VectorXd &shared, const Eigen::VectorXd &accumulate){
-  Eigen::Index s_length = shared.size();
-  shared.conservativeResize(s_length + accumulate.size());
-  shared.tail(accumulate.size())=accumulate;
-}
-
-// signal approximation accounting for Rician Noise present
-inline double add_noise_bias(double clean, double noiseStd){
-  double rp=2.25;
-  //ensure non=zero signals
-  double t = std::pow(std::abs(clean)/noiseStd,rp);
-  return noiseStd* std::pow(t+1.65,1.0/rp);
-}
-
 using namespace MR;
 using namespace App;
 
@@ -75,7 +61,7 @@ void usage() {
     + Argument ("amps", "the amplitudes image").type_image_in()
     + Argument ("mask", "the mask containing the voxels from which to estimate the response function").type_image_in()
     + Argument ("directions", "a 4D image containing the estimated fibre directions").type_image_in()
-    + Argument ("response", "the output zonal spherical harmonic coefficients, or stretched exponential model paramters (for se case)").type_file_out();
+    + Argument ("response", "the output zonal spherical harmonic coefficients or stretched exponential model paramters (for se case)").type_file_out();
 
   OPTIONS
     + Option ("isotropic", "estimate an isotropic response function (lmax=0 for all shells)")
@@ -86,7 +72,7 @@ void usage() {
                             " containing the directions along which the amplitudes are sampled")
       + Argument("path").type_file_in()
 
-    + Option ("stretchedexp", "implement stretched exponential model to estimate the response function")
+    + Option ("stretched_exp", "implement stretched exponential model to estimate the response function")
 
     + DWI::ShellsOption
 
@@ -132,7 +118,24 @@ std::vector<size_t> all_volumes(const size_t num) {
   return result;
 }
 
-// standard msmt-csd implmentation
+static void append(Eigen::VectorXd &shared, const Eigen::VectorXd &accumulate){
+  Eigen::Index s_length = shared.size();
+  shared.conservativeResize(s_length + accumulate.size());
+  shared.tail(accumulate.size())=accumulate;
+}
+
+// signal approximation accounting for Rician Noise
+inline double add_noise_bias(double clean, double noiseStd){
+  double rp=2.25;
+  //ensure non=zero signals
+  double t = std::pow(std::abs(clean)/noiseStd,rp);
+  return noiseStd* std::pow(t+1.65,1.0/rp);
+}
+
+// *****************************************************************************
+//                            Standard MSMT Implementation
+// *****************************************************************************
+
 class Accumulator {
 public:
   class Shared {
@@ -214,10 +217,6 @@ protected:
   size_t count;
   Eigen::Matrix<default_type, Eigen::Dynamic, 3> rotated_dirs_cartesian;
 };
-
-
-
-
 
 
 // *****************************************************************************
@@ -305,7 +304,6 @@ protected:
 
 
 
-
 // stretched exponential functor for levenberg-marquardt algorithm
 struct LMFunctor {
   const Eigen::VectorXd& signal;
@@ -333,8 +331,8 @@ struct LMFunctor {
   // compute residuals
   int operator()(const Eigen::VectorXd &x, Eigen::VectorXd &fvec) const {
     double estimate;
-    //  alpha must lie between [0,1] -> sigmoid function (soft constraint)
-    const double alpha = x[n-1]; //1.0 / (1.0 + std::exp(-x[n-1]));
+    // double check an alpha constraint such that alpha lies in [0,1]
+    const double alpha = x[n-1]; 
 
     for (size_t i = 0; i < signal.size(); ++i) {
       if (n == 3) {
@@ -358,7 +356,6 @@ struct LMFunctor {
 
   // compute jacobian of the residuals
   int df(const Eigen::VectorXd &x, Eigen::MatrixXd &fjac) const {
-    double epsilon = 1e-10;
     double estimate, d_bias;
 
     for (size_t i = 0; i < signal.size(); ++i) {
@@ -606,7 +603,7 @@ void run() {
 
     Eigen::VectorXd responses(nparam);
 
-    //noise estimation:
+    // noise estimation:
     std::vector<size_t> indx;
     double bmax = shared.bvalues.maxCoeff();
     double noiseStd;
@@ -644,31 +641,44 @@ void run() {
       x0[1] = 2.0;
       x0[2] = 0.8;
     } else {
-      x0[1] = 0.025;
-      x0[2] = 0.025;
+      x0[1] = 3.0;
+      x0[2] = 1.0;
       x0[3] = 0.2;
     }
 
     // optimisation
     Eigen::LevenbergMarquardt<LMFunctor> lm(functor);
+    Eigen::LevenbergMarquardtSpace::Status status = lm.minimize(x0);
 
-    int status = lm.minimize(x0);
-    VAR(status);
-
-    // TODO: LM convergence checks
-    if (status <= 0)
-      throw Exception("levenberg-marquardt optimisation was unsuccessful");
+    //status message of the levenberg-marquardt solver
+    auto status_message = [](Eigen::LevenbergMarquardtSpace::Status status) -> std::string {
+      switch(status){
+        case Eigen::LevenbergMarquardtSpace::NotStarted: return "LM solver has not started";
+        case Eigen::LevenbergMarquardtSpace::Running: return "LM solver running...";
+        case Eigen::LevenbergMarquardtSpace::ImproperInputParameters: return "Improper input parameters supplied"; 
+        case Eigen::LevenbergMarquardtSpace::RelativeReductionTooSmall: return "Converged; Relative reduction too small";
+        case Eigen::LevenbergMarquardtSpace::RelativeErrorTooSmall: return "Converged; Relative error too small ";
+        case Eigen::LevenbergMarquardtSpace::RelativeErrorAndReductionTooSmall: return "Converged; Relative Error and reduction too small";
+        case Eigen::LevenbergMarquardtSpace::CosinusTooSmall: return "Cosine of the gradient is too small";
+        case Eigen::LevenbergMarquardtSpace::TooManyFunctionEvaluation: return "Terminated; Too many function evaluations";
+        case Eigen::LevenbergMarquardtSpace::FtolTooSmall: return "Terminated; ftol too small";
+        case Eigen::LevenbergMarquardtSpace::XtolTooSmall: return "Terminated: xtol too small";
+        case Eigen::LevenbergMarquardtSpace::GtolTooSmall: return "Terminated: gtol too small";
+        default: return "Status Unknown";
+      }
+    };
+    DEBUG("status of LM solver: " + status_message(status));
 
     INFO("levenberg-marquardt solver completed in " + std::to_string(lm.iter) + " iterations");
 
-    // alpha transformation (sigmoid):
-    Eigen::VectorXd corrected = x0;
-    //corrected[nparam-1] = 1.0 / (1.0 + std::exp(-x0[nparam-1]));
-
     // save se response file, i.e. 'SE ...'
-    responses = corrected;
+    responses = x0;
 
-    CONSOLE("SE model paramters [s0, D, alpha]: [" + str(responses.transpose().cast<float>()) + "]");
+    if (nparam==3)
+      CONSOLE("SE model paramters [s0, Dapp, alpha]: [" + str(responses.transpose().cast<float>()) + "]");
+      else{
+        CONSOLE("SE model paramaters [s0, Dax, Drad, alpha]: [" + str(responses.transpose().cast<float>()) + "]");
+      }
 
     std::ofstream file(argument[3]);
     if (!file.is_open())

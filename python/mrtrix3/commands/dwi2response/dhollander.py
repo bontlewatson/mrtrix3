@@ -100,10 +100,10 @@ def usage(base_parser, subparsers): #pylint: disable=unused-variable
                             '(default: built-in Dhollander 2019)')
   options.add_argument('-model',
                       metavar='model',
-                      choices=['msmt-csd', 'stretchedexp'],
+                      choices=['msmt-csd', 'stretched_exp'],
                       default='msmt-csd',
                       help='The model used to estimate the response function'
-                            '(default: msmt-csd, other option: stretchedexp)')
+                            '(default: msmt-csd, other option: stretched_exp)')
 
 
 
@@ -141,8 +141,8 @@ def execute(): #pylint: disable=unused-variable
   model_opt = ''
   bvalues_opt = bvalues_option
 
-  if app.ARGS.model == 'stretchedexp':
-    model_opt = ' -stretchedexp'
+  if app.ARGS.model == 'stretched_exp':
+    model_opt = ' -stretched_exp'
     # do not need -shells option for stretched exp
     bvalues_opt = ''
   app.console(f' Using {app.ARGS.model} model to estimate the response function')
