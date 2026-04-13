@@ -119,6 +119,7 @@ target_link_libraries(mrtrix-core PUBLIC
     nlohmann_json::nlohmann_json
     nifti::nifti
     tcb::span
+    magic_enum::magic_enum
 )
 
 if(MRTRIX_ENABLE_GPU)
@@ -139,6 +140,14 @@ if(WIN32)
         COMMENT "Copying imported dependencies to output directory"
     )
 
+endif()
+
+
+if(MRTRIX_ENABLE_GPU)
+    install(IMPORTED_RUNTIME_ARTIFACTS
+        slang::slang
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
 endif()
 
 install(TARGETS mrtrix-core
