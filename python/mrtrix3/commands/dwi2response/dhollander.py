@@ -137,7 +137,7 @@ def execute(): #pylint: disable=unused-variable
       raise MRtrixError('Values supplied to the -lmax option must be non-negative.')
     sfwm_lmax_option = ' -lmax ' + ','.join(map(str,sfwm_lmax))
 
-  # get model estiamtion (if provided)
+  # get model estimation (if provided)
   model_opt = ''
   bvalues_opt = bvalues_option
 

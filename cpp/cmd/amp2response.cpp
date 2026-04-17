@@ -118,18 +118,18 @@ std::vector<size_t> all_volumes(const size_t num) {
   return result;
 }
 
-static void append(Eigen::VectorXd &shared, const Eigen::VectorXd &accumulate){
+static void append(Eigen::VectorXd &shared, const Eigen::VectorXd &accumulate) {
   Eigen::Index s_length = shared.size();
   shared.conservativeResize(s_length + accumulate.size());
-  shared.tail(accumulate.size())=accumulate;
+  shared.tail(accumulate.size()) = accumulate;
 }
 
 // signal approximation accounting for Rician Noise
-inline double add_noise_bias(double clean, double noiseStd){
-  double rp=2.25;
-  //ensure non=zero signals
-  double t = std::pow(std::abs(clean)/noiseStd,rp);
-  return noiseStd* std::pow(t+1.65,1.0/rp);
+inline double add_noise_bias(double clean, double noiseStd) {
+  double rp = 2.25;
+  // ensure non=zero signals
+  double t = std::pow(std::abs(clean) / noiseStd, rp);
+  return noiseStd * std::pow(t + 1.65, 1.0 / rp);
 }
 
 // *****************************************************************************
@@ -218,7 +218,6 @@ protected:
   Eigen::Matrix<default_type, Eigen::Dynamic, 3> rotated_dirs_cartesian;
 };
 
-
 // *****************************************************************************
 //                               SE implementation
 // *****************************************************************************
@@ -226,34 +225,30 @@ protected:
 class SE_Accumulator {
 public:
   class SE_Shared {
-    public:
-      SE_Shared(uint32_t max_lmax,
-          const Eigen::MatrixXd& dw_scheme)
-        : lmax(max_lmax), dirs(dw_scheme.leftCols(3)), pervolume_bvalues(dw_scheme.col(3)), count(0) {
-        }
+  public:
+    SE_Shared(uint32_t max_lmax, const Eigen::MatrixXd &dw_scheme)
+        : lmax(max_lmax), dirs(dw_scheme.leftCols(3)), pervolume_bvalues(dw_scheme.col(3)), count(0) {}
 
-      const int lmax;
-      const Eigen::MatrixXd dirs;
-      const Eigen::VectorXd pervolume_bvalues; //from the gradient table
-      size_t count;
-      // LM algo needs (amp, bval, elev) for all voxels in mask
-      Eigen::VectorXd amplitudes, bvalues, cos_elevations, sin_elevations;
+    const int lmax;
+    const Eigen::MatrixXd dirs;
+    const Eigen::VectorXd pervolume_bvalues; // from the gradient table
+    size_t count;
+    // LM algo needs (amp, bval, elev) for all voxels in mask
+    Eigen::VectorXd amplitudes, bvalues, cos_elevations, sin_elevations;
   };
 
-  SE_Accumulator(SE_Shared &shared) :
-    S(shared), count(0),
-    rotated_dirs_cartesian(S.dirs.rows(), 3)  {}
+  SE_Accumulator(SE_Shared &shared) : S(shared), count(0), rotated_dirs_cartesian(S.dirs.rows(), 3) {}
 
   ~SE_Accumulator() {
     // accumulate results from all threads:
-    append (S.amplitudes, Eigen::Map<const Eigen::VectorXd>(amplitudes.data(), amplitudes.size()));
-    append (S.sin_elevations, Eigen::Map<const Eigen::VectorXd>(sin_elevations.data(), sin_elevations.size()));
-    append (S.cos_elevations, Eigen::Map<const Eigen::VectorXd>(cos_elevations.data(), cos_elevations.size()));
-    append (S.bvalues, Eigen::Map<const Eigen::VectorXd>(bvals.data(), bvals.size()));
+    append(S.amplitudes, Eigen::Map<const Eigen::VectorXd>(amplitudes.data(), amplitudes.size()));
+    append(S.sin_elevations, Eigen::Map<const Eigen::VectorXd>(sin_elevations.data(), sin_elevations.size()));
+    append(S.cos_elevations, Eigen::Map<const Eigen::VectorXd>(cos_elevations.data(), cos_elevations.size()));
+    append(S.bvalues, Eigen::Map<const Eigen::VectorXd>(bvals.data(), bvals.size()));
     S.count += count;
   }
 
-  void operator()(Image<float>& amp_image, Image<float>& dir_image, Image<bool>& mask) {
+  void operator()(Image<float> &amp_image, Image<float> &dir_image, Image<bool> &mask) {
     if (mask.value()) {
       ++count;
 
@@ -294,37 +289,37 @@ public:
   }
 
 protected:
-  SE_Shared& S;
+  SE_Shared &S;
   size_t count;
   std::vector<double> amplitudes, bvals, cos_elevations, sin_elevations;
   Eigen::Matrix<default_type, Eigen::Dynamic, 3> rotated_dirs_cartesian;
 };
 
-
-
-
-
 // stretched exponential functor for levenberg-marquardt algorithm
 struct LMFunctor {
-  const Eigen::VectorXd& signal;
-  const Eigen::VectorXd& bval;
-  const Eigen::VectorXd& sin_elevations;
-  const Eigen::VectorXd& cos_elevations;
+  const Eigen::VectorXd &signal;
+  const Eigen::VectorXd &bval;
+  const Eigen::VectorXd &sin_elevations;
+  const Eigen::VectorXd &cos_elevations;
   const double noiseStd;
   const int n;
 
-  LMFunctor(const Eigen::VectorXd &s, const Eigen::VectorXd &b, const Eigen::VectorXd &sin_el,
-      const Eigen::VectorXd &cos_el, double noiseStd, bool is_iso = false)
-      : signal(s), bval(b), sin_elevations(sin_el), cos_elevations(cos_el), noiseStd(noiseStd), n (is_iso ? 3 : 4) {}
+  LMFunctor(const Eigen::VectorXd &s,
+            const Eigen::VectorXd &b,
+            const Eigen::VectorXd &sin_el,
+            const Eigen::VectorXd &cos_el,
+            double noiseStd,
+            bool is_iso = false)
+      : signal(s), bval(b), sin_elevations(sin_el), cos_elevations(cos_el), noiseStd(noiseStd), n(is_iso ? 3 : 4) {}
 
   // number of data points
   int values() const { return signal.size(); }
 
   inline double deriv_bias(double estimate) const {
     double rp = 2.25;
-    double tt = std::max(std::abs(estimate)/noiseStd, 1e-10);
+    double tt = std::max(std::abs(estimate) / noiseStd, 1e-10);
     // d(biased_estimate)/d(estimate)
-    double factor = std::pow(tt,rp - 1.0) * std::pow(tt +1.65,1.0/rp - 1.0);
+    double factor = std::pow(tt, rp - 1.0) * std::pow(tt + 1.65, 1.0 / rp - 1.0);
     return factor;
   }
 
@@ -332,7 +327,7 @@ struct LMFunctor {
   int operator()(const Eigen::VectorXd &x, Eigen::VectorXd &fvec) const {
     double estimate;
     // double check an alpha constraint such that alpha lies in [0,1]
-    const double alpha = x[n-1]; 
+    const double alpha = x[n - 1];
 
     for (size_t i = 0; i < signal.size(); ++i) {
       if (n == 3) {
@@ -344,12 +339,11 @@ struct LMFunctor {
           const double cel = cos_elevations[i];
           const double sel = sin_elevations[i];
           const double diffusivity = x[1] * (cel * cel) + x[2] * (sel * sel);
-          estimate = x[0] * std::exp (-std::pow (bval[i] * diffusivity, alpha));
-        }
-        else
+          estimate = x[0] * std::exp(-std::pow(bval[i] * diffusivity, alpha));
+        } else
           estimate = x[0];
       }
-      fvec[i] = signal[i] - add_noise_bias(estimate,noiseStd);
+      fvec[i] = signal[i] - add_noise_bias(estimate, noiseStd);
     }
     return 0;
   }
@@ -360,22 +354,21 @@ struct LMFunctor {
 
     for (size_t i = 0; i < signal.size(); ++i) {
       const double bb = bval[i];
-      const double alpha = x[n-1];
+      const double alpha = x[n - 1];
 
       if (n == 3) {
         // j = [ df/ d(S0), df/d(D_app), df/d(alpha)], scale jacobian by der of the bias
         const double bD = bb * x[1];
         const double exponent = std::exp(-std::pow(bD, alpha));
         estimate = x[0] * std::exp(-std::pow(bD, alpha));
-        d_bias = deriv_bias (estimate);
+        d_bias = deriv_bias(estimate);
 
         fjac(i, 0) = -d_bias * exponent;
         if (bb > 0.0) {
-          fjac(i, 1) = d_bias * alpha * bb * x[0] * exponent * std::pow(bD, alpha-1.0);
+          fjac(i, 1) = d_bias * alpha * bb * x[0] * exponent * std::pow(bD, alpha - 1.0);
           fjac(i, 2) = d_bias * x[0] * exponent * std::pow(bD, alpha) * std::log(bD);
-        }
-        else
-          fjac(i,1) = fjac(i,2) = 0.0;
+        } else
+          fjac(i, 1) = fjac(i, 2) = 0.0;
 
       } else {
         // j = [ df/ d(S0), df/d(D_ax), df/d(D_rad), df/d(alpha)], scale jacobian by der of the bias
@@ -384,27 +377,25 @@ struct LMFunctor {
           const double sel = sin_elevations[i];
           const double diffusivity = x[1] * (cel * cel) + x[2] * (sel * sel);
           const double bD = bb * diffusivity;
-          const double exponent = std::exp (-std::pow(bD, alpha));
+          const double exponent = std::exp(-std::pow(bD, alpha));
 
           estimate = x[0] * exponent;
-          d_bias = deriv_bias (estimate);
+          d_bias = deriv_bias(estimate);
 
           fjac(i, 0) = -d_bias * exponent;
-          fjac(i, 1) = d_bias * alpha * bb * x[0] * exponent * (cel * cel) * std::pow(bD, alpha-1.0);
-          fjac(i, 2) = d_bias * alpha * bb * x[0] * exponent * (sel * sel) * std::pow(bD, alpha-1.0);
+          fjac(i, 1) = d_bias * alpha * bb * x[0] * exponent * (cel * cel) * std::pow(bD, alpha - 1.0);
+          fjac(i, 2) = d_bias * alpha * bb * x[0] * exponent * (sel * sel) * std::pow(bD, alpha - 1.0);
           fjac(i, 3) = d_bias * x[0] * exponent * std::pow(bD, alpha) * std::log(bD);
-        }
-        else {
-          d_bias = deriv_bias (x[0]);
-          fjac(i,0) = -d_bias;
-          fjac(i,1) = fjac(i,2) = fjac(i,3) = 0.0;
+        } else {
+          d_bias = deriv_bias(x[0]);
+          fjac(i, 0) = -d_bias;
+          fjac(i, 1) = fjac(i, 2) = fjac(i, 3) = 0.0;
         }
       }
     }
     return 0;
   }
 };
-
 
 void run() {
 
@@ -508,7 +499,7 @@ void run() {
   const bool use_ols = !get_options("noconstraint").empty();
 
   // TODO: parse the se model option
-  const bool use_se = !get_options("stretchedexp").empty();
+  const bool use_se = !get_options("stretched_exp").empty();
 
   // response estiamtion for shell structure:
   if (!use_se) {
@@ -592,14 +583,14 @@ void run() {
     // response estimation for no shell structure (se):
     int nparam = (max_lmax == 0) ? 3 : 4;
 
-    DEBUG ("gathering signals in selected voxels...");
+    DEBUG("gathering signals in selected voxels...");
 
-    SE_Accumulator::SE_Shared shared (max_lmax,
-        DWI::get_DW_scheme(header));
+    SE_Accumulator::SE_Shared shared(max_lmax, DWI::get_DW_scheme(header));
 
     ThreadedLoop(image, 0, 3).run(SE_Accumulator(shared), image, dir_image, mask);
 
-    assert(shared.amplitudes.size() == shared.bvalues.size() && shared.amplitudes.size() == shared.sin_elevations.size());
+    assert(shared.amplitudes.size() == shared.bvalues.size() &&
+           shared.amplitudes.size() == shared.sin_elevations.size());
 
     Eigen::VectorXd responses(nparam);
 
@@ -608,22 +599,22 @@ void run() {
     double bmax = shared.bvalues.maxCoeff();
     double noiseStd;
 
-    for (size_t i =0; i<shared.bvalues.size(); ++i){
-      if(shared.bvalues[i]==bmax && std::asin(shared.sin_elevations[i])<0.2)
+    for (size_t i = 0; i < shared.bvalues.size(); ++i) {
+      if (shared.bvalues[i] == bmax && std::asin(shared.sin_elevations[i]) < 0.2)
         indx.push_back(i);
     }
     double mean_maxb_amp = 0.0;
     for (int i = 0; i < indx.size(); ++i)
       mean_maxb_amp += shared.amplitudes[indx[i]];
-    mean_maxb_amp/= indx.size();
+    mean_maxb_amp /= indx.size();
 
-    noiseStd = mean_maxb_amp/add_noise_bias(0.0,1.0);
+    noiseStd = mean_maxb_amp / add_noise_bias(0.0, 1.0);
 
-    DEBUG ("fitting paramters of stretched exponential model to signals...");
+    DEBUG("fitting paramters of stretched exponential model to signals...");
 
     // levenberg-marquart solver:
-    LMFunctor functor (shared.amplitudes, shared.bvalues,
-                      shared.sin_elevations, shared.cos_elevations, noiseStd, nparam == 3);
+    LMFunctor functor(
+        shared.amplitudes, shared.bvalues, shared.sin_elevations, shared.cos_elevations, noiseStd, nparam == 3);
 
     // initial guesses:
     Eigen::VectorXd x0(nparam);
@@ -650,21 +641,33 @@ void run() {
     Eigen::LevenbergMarquardt<LMFunctor> lm(functor);
     Eigen::LevenbergMarquardtSpace::Status status = lm.minimize(x0);
 
-    //status message of the levenberg-marquardt solver
+    // status message of the levenberg-marquardt solver
     auto status_message = [](Eigen::LevenbergMarquardtSpace::Status status) -> std::string {
-      switch(status){
-        case Eigen::LevenbergMarquardtSpace::NotStarted: return "LM solver has not started";
-        case Eigen::LevenbergMarquardtSpace::Running: return "LM solver running...";
-        case Eigen::LevenbergMarquardtSpace::ImproperInputParameters: return "Improper input parameters supplied"; 
-        case Eigen::LevenbergMarquardtSpace::RelativeReductionTooSmall: return "Converged; Relative reduction too small";
-        case Eigen::LevenbergMarquardtSpace::RelativeErrorTooSmall: return "Converged; Relative error too small ";
-        case Eigen::LevenbergMarquardtSpace::RelativeErrorAndReductionTooSmall: return "Converged; Relative Error and reduction too small";
-        case Eigen::LevenbergMarquardtSpace::CosinusTooSmall: return "Cosine of the gradient is too small";
-        case Eigen::LevenbergMarquardtSpace::TooManyFunctionEvaluation: return "Terminated; Too many function evaluations";
-        case Eigen::LevenbergMarquardtSpace::FtolTooSmall: return "Terminated; ftol too small";
-        case Eigen::LevenbergMarquardtSpace::XtolTooSmall: return "Terminated: xtol too small";
-        case Eigen::LevenbergMarquardtSpace::GtolTooSmall: return "Terminated: gtol too small";
-        default: return "Status Unknown";
+      switch (status) {
+      case Eigen::LevenbergMarquardtSpace::NotStarted:
+        return "LM solver has not started";
+      case Eigen::LevenbergMarquardtSpace::Running:
+        return "LM solver running...";
+      case Eigen::LevenbergMarquardtSpace::ImproperInputParameters:
+        return "Improper input parameters supplied";
+      case Eigen::LevenbergMarquardtSpace::RelativeReductionTooSmall:
+        return "Converged; Relative reduction too small";
+      case Eigen::LevenbergMarquardtSpace::RelativeErrorTooSmall:
+        return "Converged; Relative error too small ";
+      case Eigen::LevenbergMarquardtSpace::RelativeErrorAndReductionTooSmall:
+        return "Converged; Relative Error and reduction too small";
+      case Eigen::LevenbergMarquardtSpace::CosinusTooSmall:
+        return "Cosine of the gradient is too small";
+      case Eigen::LevenbergMarquardtSpace::TooManyFunctionEvaluation:
+        return "Terminated; Too many function evaluations";
+      case Eigen::LevenbergMarquardtSpace::FtolTooSmall:
+        return "Terminated; ftol too small";
+      case Eigen::LevenbergMarquardtSpace::XtolTooSmall:
+        return "Terminated: xtol too small";
+      case Eigen::LevenbergMarquardtSpace::GtolTooSmall:
+        return "Terminated: gtol too small";
+      default:
+        return "Status Unknown";
       }
     };
     DEBUG("status of LM solver: " + status_message(status));
@@ -674,21 +677,19 @@ void run() {
     // save se response file, i.e. 'SE ...'
     responses = x0;
 
-    if (nparam==3)
+    if (nparam == 3)
       CONSOLE("SE model paramters [s0, Dapp, alpha]: [" + str(responses.transpose().cast<float>()) + "]");
-      else{
-        CONSOLE("SE model paramaters [s0, Dax, Drad, alpha]: [" + str(responses.transpose().cast<float>()) + "]");
-      }
+    else {
+      CONSOLE("SE model paramaters [s0, Dax, Drad, alpha]: [" + str(responses.transpose().cast<float>()) + "]");
+    }
 
     std::ofstream file(argument[3]);
     if (!file.is_open())
       throw Exception("error writing to " + argument[3]);
 
-    file<< "SE";
+    file << "SE";
     for (int i = 0; i < nparam; ++i)
       file << " " << responses[i];
     file << "\n";
-
   }
 }
-
