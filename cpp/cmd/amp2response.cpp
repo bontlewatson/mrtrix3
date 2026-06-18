@@ -621,8 +621,9 @@ void run() {
     Eigen::VectorXd x0(nparam);
     double s0 = 0.0;
     int N = 0;
+    const float bzero_threshold = File::Config::get_float("BZeroThreshold", 10.0) / 1000.0;
     for (int i = 0; i < shared.bvalues.size(); ++i) {
-      if (shared.bvalues[i] == 0.0) {
+      if (shared.bvalues[i] <= bzero_threshold) {
         s0 += shared.amplitudes[i];
         N++;
       }
