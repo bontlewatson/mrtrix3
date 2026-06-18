@@ -14,9 +14,12 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
+#include "eigen_plugins/eigen_plugins.h"
 #include <Eigen/Dense>
+#include <filesystem>
 
 #include "command.h"
+#include "dwi/directions/validate.h"
 #include "dwi/gradient.h"
 #include "dwi/shells.h"
 #include "file/matrix.h"
@@ -227,8 +230,8 @@ public:
     const Eigen::MatrixXd dirs;
     const Eigen::VectorXd pervolume_bvalues; // from the gradient table
     size_t count;
-    // LM algo needs (amp, bval, elev) for all voxels in mask
-    Eigen::VectorXd amplitudes, bvalues, cos_elevations, sin_elevations;
+    // LM algo needs (amp, bval, inclination) for all voxels in mask
+    Eigen::VectorXd amplitudes, bvalues, cos_inclination, sin_inclination;
   };
 
   SE_Accumulator(SE_Shared &shared) : S(shared), count(0), rotated_dirs_cartesian(S.dirs.rows(), 3) {}
@@ -236,8 +239,8 @@ public:
   ~SE_Accumulator() {
     // accumulate results from all threads:
     append(S.amplitudes, amplitudes);
-    append(S.sin_elevations, sin_elevations);
-    append(S.cos_elevations, cos_elevations);
+    append(S.sin_inclination, sin_inclination);
+    append(S.cos_inclination, cos_inclination);
     append(S.bvalues, bvals);
     S.count += count;
   }
@@ -275,9 +278,9 @@ public:
         amplitudes.push_back(amp_image.value());
         bvals.push_back(S.pervolume_bvalues[i] / 1000.0);
 
-        double elevation = rotated_dirs_azin(i, 1);
-        sin_elevations.push_back(std::sin(elevation));
-        cos_elevations.push_back(std::cos(elevation));
+        double inclination = rotated_dirs_azin(i, 1);
+        sin_inclination.push_back(std::sin(inclination));
+        cos_inclination.push_back(std::cos(inclination));
       }
     }
   }
@@ -285,7 +288,7 @@ public:
 protected:
   SE_Shared &S;
   size_t count;
-  std::vector<double> amplitudes, bvals, cos_elevations, sin_elevations;
+  std::vector<double> amplitudes, bvals, cos_inclination, sin_inclination;
   Eigen::Matrix<default_type, Eigen::Dynamic, 3> rotated_dirs_cartesian;
 
   void append(Eigen::VectorXd &shared, const std::vector<double> &accumulate) {
@@ -300,8 +303,8 @@ protected:
 struct LMFunctor {
   const Eigen::VectorXd &signal;
   const Eigen::VectorXd &bval;
-  const Eigen::VectorXd &sin_elevations;
-  const Eigen::VectorXd &cos_elevations;
+  const Eigen::VectorXd &sin_inclination;
+  const Eigen::VectorXd &cos_inclination;
   const double noiseStd;
   const int n;
 
@@ -311,7 +314,7 @@ struct LMFunctor {
             const Eigen::VectorXd &cos_el,
             double noiseStd,
             bool is_iso = false)
-      : signal(s), bval(b), sin_elevations(sin_el), cos_elevations(cos_el), noiseStd(noiseStd), n(is_iso ? 3 : 4) {}
+      : signal(s), bval(b), sin_inclination(sin_el), cos_inclination(cos_el), noiseStd(noiseStd), n(is_iso ? 3 : 4) {}
 
   // number of data points
   int values() const { return signal.size(); }
@@ -337,8 +340,8 @@ struct LMFunctor {
       } else {
         // x = [s0, D_ax, D_rad, alpha]
         if (bval[i] > 0.0) {
-          const double cel = cos_elevations[i];
-          const double sel = sin_elevations[i];
+          const double cel = cos_inclination[i];
+          const double sel = sin_inclination[i];
           const double diffusivity = x[1] * (cel * cel) + x[2] * (sel * sel);
           estimate = x[0] * std::exp(-std::pow(bval[i] * diffusivity, alpha));
         } else
@@ -374,8 +377,8 @@ struct LMFunctor {
       } else {
         // j = [ df/ d(S0), df/d(D_ax), df/d(D_rad), df/d(alpha)], scale jacobian by der of the bias
         if (bb > 0.0) {
-          const double cel = cos_elevations[i];
-          const double sel = sin_elevations[i];
+          const double cel = cos_inclination[i];
+          const double sel = sin_inclination[i];
           const double diffusivity = x[1] * (cel * cel) + x[2] * (sel * sel);
           const double bD = bb * diffusivity;
           const double exponent = std::exp(-std::pow(bD, alpha));
@@ -398,10 +401,19 @@ struct LMFunctor {
   }
 };
 
+// *****************************************************************************
+//                            main run() function
+// *****************************************************************************
+
 void run() {
 
   // Get directions from either selecting a b-value shell, or the header, or external file
-  auto header = Header::open(argument[0]);
+  const std::filesystem::path amps_input_path{argument[0]};
+  const std::filesystem::path mask_input_path{argument[1]};
+  const std::filesystem::path directions_input_path{argument[2]};
+  const std::filesystem::path response_output_path{argument[3]};
+
+  auto header = Header::open(amps_input_path);
 
   // May be dealing with multiple shells
   std::vector<Eigen::MatrixXd> dirs_azin;
@@ -412,7 +424,15 @@ void run() {
   // exponential: need b-values too!
   auto opt = get_options("directions");
   if (!opt.empty()) {
-    dirs_azin.push_back(File::Matrix::load_matrix(opt[0][0]));
+    auto dirs = File::Matrix::load_matrix(opt[0][0]);
+    auto dv = DWI::Directions::validate(dirs, opt[0][0], false);
+    if (dv.n_non_unit > 0) {
+      WARN("Input directions file \"" + opt[0][0].as_text() + "\"" +                //
+           " contains " + str(dv.n_non_unit) + " direction" +                       //
+           (dv.n_non_unit > 1 ? "s that are" : " that is") + " not of unit norm;" + //
+           " all directions will be interpreted agnostically of norm");             //
+    }
+    dirs_azin.push_back(Math::Sphere::as_spherical(dirs));
     volumes.push_back(all_volumes(dirs_azin.size()));
   } else {
     auto hit = header.keyval().find("directions");
@@ -448,10 +468,10 @@ void run() {
       lmax.push_back(0);
     max_lmax = 0;
   } else if (!opt.empty()) {
-    lmax = parse_ints<uint32_t>(opt[0][0]);
+    lmax = MR::container_cast<decltype(lmax)>(opt[0][0].as_sequence_uint());
     if (lmax.size() != dirs_azin.size())
-      throw Exception("Number of lmax\'s specified (" + str(lmax.size()) +
-                      ") does not match number of b-value shells (" + str(dirs_azin.size()) + ")");
+      throw Exception("Number of lmax\'s specified (" + str(lmax.size()) + ")" +                   //
+                      " does not match number of b-value SHells (" + str(dirs_azin.size()) + ")"); //
     for (auto i : lmax) {
       if (i % 2)
         throw Exception("Values specified for lmax must be even");
@@ -480,13 +500,14 @@ void run() {
   }
 
   auto image = header.get_image<float>();
-  auto mask = Image<bool>::open(argument[1]);
+  auto mask = Image<bool>::open(mask_input_path);
   check_dimensions(image, mask, 0, 3);
   if (!(mask.ndim() == 3 || (mask.ndim() == 4 && mask.size(3) == 1)))
     throw Exception("input mask must be a 3D image");
-  auto dir_image = Image<float>::open(argument[2]);
+  auto dir_image = Image<float>::open(directions_input_path);
   if (dir_image.ndim() < 4 || dir_image.size(3) < 3)
-    throw Exception("input direction image \"" + std::string(argument[2]) + "\" does not have expected dimensions");
+    throw Exception("input direction image \"" + directions_input_path.string() + "\"" + //
+                    " does not have expected dimensions");                               //
   check_dimensions(image, dir_image, 0, 3);
 
   size_t num_voxels = 0;
@@ -502,8 +523,12 @@ void run() {
   // TODO: parse the se model option
   const bool use_se = !get_options("stretched_exp").empty();
 
-  // response estiamtion for shell structure:
+  // response estimation for shell structure:
   if (!use_se) {
+    // *****************************************************************************
+    //                            Standard MSMT Implementation
+    // *****************************************************************************
+
     CONSOLE(std::string("estimating response function using ") + (use_ols ? "ordinary" : "constrained") +
             " least-squares from " + str(num_voxels) + " voxels");
 
@@ -574,12 +599,15 @@ void run() {
         line += "," + str<int>((*shells)[i].get_mean());
       keyvals["Shells"] = line;
     }
-    File::Matrix::save_matrix(responses, argument[3], keyvals);
+    File::Matrix::save_matrix(responses, response_output_path, keyvals);
 
   } else if (use_se) {
+    // *****************************************************************************
+    //                               SE implementation
+    // *****************************************************************************
 
-    CONSOLE(std::string("estimating response function using the stretched exponential from ") + str(num_voxels) +
-            " voxels");
+    CONSOLE(std::string("estimating response function using the stretched exponential from ") + //
+            str(num_voxels) + " voxels");                                                       //
 
     // response estimation for no shell structure (se):
     int nparam = (max_lmax == 0) ? 3 : 4;
@@ -591,7 +619,7 @@ void run() {
     ThreadedLoop(image, 0, 3).run(SE_Accumulator(shared), image, dir_image, mask);
 
     assert(shared.amplitudes.size() == shared.bvalues.size() &&
-           shared.amplitudes.size() == shared.sin_elevations.size());
+           shared.amplitudes.size() == shared.sin_inclination.size());
 
     Eigen::VectorXd responses(nparam);
 
@@ -601,7 +629,7 @@ void run() {
     double noiseStd;
 
     for (size_t i = 0; i < shared.bvalues.size(); ++i) {
-      if (shared.bvalues[i] == bmax && std::asin(shared.sin_elevations[i]) < 0.2)
+      if (shared.bvalues[i] == bmax && std::asin(shared.sin_inclination[i]) < 0.2)
         indx.push_back(i);
     }
     double mean_maxb_amp = 0.0;
@@ -615,13 +643,13 @@ void run() {
 
     // levenberg-marquart solver:
     LMFunctor functor(
-        shared.amplitudes, shared.bvalues, shared.sin_elevations, shared.cos_elevations, noiseStd, nparam == 3);
+        shared.amplitudes, shared.bvalues, shared.sin_inclination, shared.cos_inclination, noiseStd, nparam == 3);
 
     // initial guesses:
     Eigen::VectorXd x0(nparam);
     double s0 = 0.0;
     int N = 0;
-    const float bzero_threshold = File::Config::get_float("BZeroThreshold", 10.0) / 1000.0;
+    const float bzero_threshold = File::Config::get_float("BZeroThreshold", DWI::default_bzero_threshold) / 1000.0;
     for (int i = 0; i < shared.bvalues.size(); ++i) {
       if (shared.bvalues[i] <= bzero_threshold) {
         s0 += shared.amplitudes[i];
@@ -685,9 +713,9 @@ void run() {
       CONSOLE("SE model paramaters [s0, Dax, Drad, alpha]: [" + str(responses.transpose().cast<float>()) + "]");
     }
 
-    std::ofstream file(argument[3]);
+    std::ofstream file(response_output_path);
     if (!file.is_open())
-      throw Exception("error writing to " + argument[3]);
+      throw Exception("error writing to " + response_output_path.string());
 
     file << "SE";
     for (int i = 0; i < nparam; ++i)

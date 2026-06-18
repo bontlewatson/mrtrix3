@@ -127,25 +127,17 @@ inline void check_keyvals(const HeaderType1 &in1, const HeaderType2 &in2) {
     while (it2 != in2.keyval().end() && reserved.find(it2->first) != reserved.end())
       ++it2;
 
-    if (it1 == in1.keyval().end() || it2 == in2.keyval().end())
+    if (it1 == in1.keyval().end() && it2 == in2.keyval().end())
       break;
 
-    if (it1 == in1.keyval().end()) {
-      errors.push_back("Key \"" + it2->first + "\" in image \"" + in2.name() + "\" not present in \"" + in1.name() +
-                       "\"");
+    if (it1 == in1.keyval().end() || (it2 != in2.keyval().end() && it1->first > it2->first)) {
+      errors.push_back("Key \"" + it2->first + "\" in image \"" + in2.name() + "\"" + //
+                       " not present in \"" + in1.name() + "\"");                     //
       ++it2;
-    } else if (it2 == in2.keyval().end()) {
-      errors.push_back("Key \"" + it1->first + "\" in image \"" + in1.name() + "\" not present in \"" + in2.name() +
-                       "\"");
+    } else if (it2 == in2.keyval().end() || (it1 != in1.keyval().end() && it1->first < it2->first)) {
+      errors.push_back("Key \"" + it1->first + "\" in image \"" + in1.name() + "\"" + //
+                       " not present in \"" + in2.name() + "\"");                     //
       ++it1;
-    } else if (it1->first < it2->first) {
-      errors.push_back("Key \"" + it1->first + "\" in image \"" + in1.name() + "\" not present in \"" + in2.name() +
-                       "\"");
-      ++it1;
-    } else if (it1->first > it2->first) {
-      errors.push_back("Key \"" + it2->first + "\" in image \"" + in2.name() + "\" not present in \"" + in1.name() +
-                       "\"");
-      ++it2;
     } else {
       if (it1->second != it2->second)
         errors.push_back("Key \"" + it1->first + "\" has different values between images");
@@ -162,8 +154,8 @@ inline void check_keyvals(const HeaderType1 &in1, const HeaderType2 &in2) {
 template <class HeaderType1, class HeaderType2> inline bool headers_match(HeaderType1 &in1, HeaderType2 &in2) {
   if (!dimensions_match(in1, in2))
     return false;
-  if (!spacings_match(
-          in1, in2, 1e-6)) // implicitly checked in voxel_grids_match_in_scanner_space but with different tolerance
+  // implicitly checked in voxel_grids_match_in_scanner_space but with different tolerance
+  if (!spacings_match(in1, in2, 1e-6))
     return false;
   if (!voxel_grids_match_in_scanner_space(in1, in2))
     return false;

@@ -16,58 +16,34 @@
 
 #include "mrview/tool/tractography/tractography.h"
 
+#include "magic_enum/magic_enum.hpp"
 #include <array>
 
 #include "dialog/file.h"
+#include "enum.h"
+#include "file/config.h"
+#include "gui.h"
 #include "lighting_dock.h"
 #include "mrtrix.h"
 #include "mrview/qthelpers.h"
 #include "mrview/tool/list_model_base.h"
 #include "mrview/tool/tractography/track_scalar_file.h"
 #include "mrview/tool/tractography/tractogram.h"
+#include "mrview/tool/tractography/tractogram_enums.h"
 #include "mrview/window.h"
 #include "opengl/lighting.h"
 
 namespace MR::GUI::MRView::Tool {
-const std::vector<std::string> tractogram_geometry_types = {"pseudotubes", "lines", "points"};
-
-TrackGeometryType geometry_index2type(const int idx) {
-  switch (idx) {
-  case 0:
-    return TrackGeometryType::Pseudotubes;
-  case 1:
-    return TrackGeometryType::Lines;
-  case 2:
-    return TrackGeometryType::Points;
-  default:
-    assert(0);
-    return TrackGeometryType::Pseudotubes;
-  }
-}
-
-size_t geometry_string2index(std::string type_str) {
-  type_str = lowercase(type_str);
-
-  auto matches = [&type_str](std::string_view s) { return type_str == lowercase(s); };
-  const auto &list = tractogram_geometry_types;
-  auto it = std::find_if(list.begin(), list.end(), matches);
-  if (it != list.end())
-    return std::distance(list.begin(), it);
-
-  throw Exception("Unrecognised value for tractogram geometry \"" + type_str + "\" (options are: " + join(list, ", ") +
-                  "); ignoring");
-  return 0;
-}
 
 class Tractography::Model : public ListModelBase {
 
 public:
   Model(QObject *parent) : ListModelBase(parent) {}
 
-  void add_items(std::vector<std::string> &filenames, Tractography &tractography_tool) {
+  void add_items(const std::vector<std::filesystem::path> &filepaths, Tractography &tractography_tool) {
 
-    for (size_t i = 0; i < filenames.size(); ++i) {
-      Tractogram *tractogram = new Tractogram(tractography_tool, filenames[i]);
+    for (size_t i = 0; i < filepaths.size(); ++i) {
+      Tractogram *tractogram = new Tractogram(tractography_tool, filepaths[i]);
       try {
         tractogram->load_tracks();
         beginInsertRows(QModelIndex(), items.size(), items.size() + 1);
@@ -190,9 +166,10 @@ Tractography::Tractography(Dock *parent)
 
   geom_type_combobox = new ComboBoxWithErrorMsg(this, "(variable)");
   geom_type_combobox->setToolTip(tr("Set the tractogram geometry type"));
-  geom_type_combobox->addItem("Pseudotubes");
-  geom_type_combobox->addItem("Lines");
-  geom_type_combobox->addItem("Points");
+  // Insert combobox entries in the same order as the enumerators are declared,
+  //   so that each entry's index matches its TrackGeometryType underlying value.
+  for (const auto &geom_type_name : magic_enum::enum_names<TrackGeometryType>())
+    geom_type_combobox->addItem(qstr(geom_type_name));
   connect(geom_type_combobox, SIGNAL(activated(int)), this, SLOT(geom_type_selection_slot(int)));
   hlayout->addWidget(geom_type_combobox);
 
@@ -284,18 +261,21 @@ Tractography::Tractography(Dock *parent)
   connect(action, SIGNAL(triggered()), this, SLOT(colour_by_scalar_file_slot()));
   track_option_menu->addAction(action);
 
+  Tractogram::default_tract_geom = TrackGeometryType::Pseudotubes;
   // CONF option: MRViewDefaultTractGeomType
   // CONF default: Pseudotubes
   // CONF The default geometry type used to render tractograms.
   // CONF Options are Pseudotubes, Lines or Points
-  const std::string default_geom_type = File::Config::get("MRViewDefaultTractGeomType", tractogram_geometry_types[0]);
-  try {
-    const size_t default_geom_index = geometry_string2index(default_geom_type);
-    Tractogram::default_tract_geom = geometry_index2type(default_geom_index);
-    geom_type_combobox->setCurrentIndex(default_geom_index);
-  } catch (Exception &e) {
-    e.display();
+  auto default_geom_type_config = File::Config::get("MRViewDefaultTractGeomType");
+  if (default_geom_type_config.has_value()) {
+    try {
+      Tractogram::default_tract_geom = MR::Enum::from_name<TrackGeometryType>(default_geom_type_config.value());
+    } catch (Exception &e) {
+      e.display();
+    }
   }
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+  geom_type_combobox->setCurrentIndex(*magic_enum::enum_index(Tractogram::default_tract_geom));
 
   // In the instance where pseudotubes are _not_ the default, enable lighting by default
   if (Tractogram::default_tract_geom != TrackGeometryType::Pseudotubes) {
@@ -326,7 +306,7 @@ void Tractography::draw_colourbars() {
   for (int i = 0; i < tractogram_list_model->rowCount(); ++i) {
     Tractogram *tractogram = dynamic_cast<Tractogram *>(tractogram_list_model->items[i].get());
     if (tractogram->show && tractogram->get_color_type() == TrackColourType::ScalarFile &&
-        tractogram->intensity_scalar_filename.length())
+        !tractogram->intensity_scalar_path.empty())
       tractogram->request_render_colourbar(*scalar_file_options);
   }
 }
@@ -338,7 +318,7 @@ size_t Tractography::visible_number_colourbars() {
     for (size_t i = 0, N = tractogram_list_model->rowCount(); i < N; ++i) {
       Tractogram *tractogram = dynamic_cast<Tractogram *>(tractogram_list_model->items[i].get());
       if (tractogram->show && tractogram->get_color_type() == TrackColourType::ScalarFile &&
-          tractogram->intensity_scalar_filename.length())
+          !tractogram->intensity_scalar_path.empty())
         total_visible += 1;
     }
   }
@@ -347,16 +327,16 @@ size_t Tractography::visible_number_colourbars() {
 }
 
 void Tractography::tractogram_open_slot() {
-
-  std::vector<std::string> list =
-      Dialog::File::get_files(this, "Select tractograms to open", "Tractograms (*.tck)", &current_folder);
-  add_tractogram(list);
+  auto load_paths =
+      Dialog::File::input_filepaths(this, "Select tractograms to open", "Tractograms (*.tck)", current_folder);
+  if (!load_paths.empty())
+    current_folder = load_paths.last_directory;
+  add_tractogram(load_paths.multi_selection);
 }
 
-void Tractography::add_tractogram(std::vector<std::string> &list) {
-  if (list.empty()) {
+void Tractography::add_tractogram(const std::vector<std::filesystem::path> &list) {
+  if (list.empty())
     return;
-  }
   try {
     tractogram_list_model->add_items(list, *this);
     select_last_added_tractogram();
@@ -370,10 +350,10 @@ void Tractography::dropEvent(QDropEvent *event) {
 
   const QMimeData *mimeData = event->mimeData();
   if (mimeData->hasUrls()) {
-    std::vector<std::string> list;
+    std::vector<std::filesystem::path> list;
     QList<QUrl> urlList = mimeData->urls();
     for (int i = 0; i < urlList.size() && i < max_files; ++i) {
-      list.push_back(QtHelpers::url_to_std_string(urlList.at(i)));
+      list.push_back(QtHelpers::url_to_fspath(urlList.at(i)));
     }
     try {
       tractogram_list_model->add_items(list, *this);
@@ -567,7 +547,7 @@ void Tractography::colour_by_scalar_file_slot() {
 
   Tractogram *tractogram = tractogram_list_model->get_tractogram(indices[0]);
   scalar_file_options->set_tractogram(tractogram);
-  if (tractogram->intensity_scalar_filename.empty()) {
+  if (tractogram->intensity_scalar_path.empty()) {
     if (!scalar_file_options->open_intensity_track_scalar_file_slot()) {
       colour_combobox->blockSignals(true);
       switch (tractogram->get_color_type()) {
@@ -646,7 +626,7 @@ void Tractography::geom_type_selection_slot(int selected_index) {
   if (selected_index == 3)
     return;
 
-  TrackGeometryType geom_type = geometry_index2type(selected_index);
+  const TrackGeometryType geom_type = magic_enum::enum_value<TrackGeometryType>(static_cast<size_t>(selected_index));
 
   QModelIndexList indices = tractogram_list_view->selectionModel()->selectedIndexes();
   for (int i = 0; i < indices.size(); ++i)
@@ -784,8 +764,8 @@ void Tractography::add_commandline_options(MR::App::OptionList &options) {
 
       + Option("tractography.geometry",
                "The geometry type to use when rendering tractograms"
-               " (options are: " + join(tractogram_geometry_types, ", ") + ")").allow_multiple()
-        + Argument("value").type_choice(tractogram_geometry_types)
+               " (options are: " + MR::Enum::join<TrackGeometryType>() + ")").allow_multiple()
+        + Argument("value").type_choice<TrackGeometryType>()
 
       + Option("tractography.opacity",
                "Opacity of tractography display, [0.0, 1.0];"
@@ -843,7 +823,7 @@ void Tractography::select_last_added_tractogram() {
 bool Tractography::process_commandline_option(const MR::App::ParsedOption &opt) {
 
   if (opt.opt->is("tractography.load")) {
-    std::vector<std::string> list(1, std::string(opt[0]));
+    std::vector<std::filesystem::path> list(1, opt[0]);
     add_tractogram(list);
     return true;
   }
@@ -973,7 +953,7 @@ bool Tractography::process_commandline_option(const MR::App::ParsedOption &opt) 
 
   if (opt.opt->is("tractography.geometry")) {
     try {
-      const TrackGeometryType geom_type = geometry_index2type(geometry_string2index(opt[0]));
+      const TrackGeometryType geom_type = MR::Enum::from_name<TrackGeometryType>(std::string(opt[0]));
       QModelIndexList indices = tractogram_list_view->selectionModel()->selectedIndexes();
       if (!indices.empty()) {
         for (int i = 0; i < indices.size(); ++i)

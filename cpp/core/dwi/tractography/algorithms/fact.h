@@ -16,9 +16,15 @@
 
 #pragma once
 
+#include <filesystem>
+#include <optional>
+
+#include "fixel/validate.h"
+
 #include "interp/masked.h"
 #include "interp/nearest.h"
 
+#include "dwi/tractography/ACT/act.h"
 #include "dwi/tractography/tracking/method.h"
 #include "dwi/tractography/tracking/shared.h"
 #include "dwi/tractography/tracking/tractography.h"
@@ -32,14 +38,20 @@ class FACT : public MethodBase {
 public:
   class Shared : public SharedBase {
   public:
-    Shared(std::string_view diff_path, DWI::Tractography::Properties &property_set)
-        : SharedBase(diff_path, property_set), num_vec(source.size(3) / 3) {
+    Shared(const std::filesystem::path &diff_path, DWI::Tractography::Properties &property_set)
+        : SharedBase(diff_path,
+                     property_set,
+                     {ZeroExclusion::Enabled, NonFiniteExclusion::All, HoleFilling::EnabledExcludeNonFinite}),
+          num_vec(source.size(3) / 3) {
 
-      if (source.size(3) % 3)
-        throw Exception("Number of volumes in FACT algorithm input image should be a multiple of 3");
+      Peaks::validate_header(source_header);
+      Peaks::debug_validate_image(source);
 
-      if (is_act() && act().backtrack())
-        throw Exception("Backtracking not valid for deterministic algorithms");
+      if (is_act()) {
+        if (act().backtrack())
+          throw Exception("Backtracking not valid for deterministic algorithms");
+        act().set_default_sgm_trunc(ACT::sgm_trunc_t::MINIMUM);
+      }
 
       if (rk4)
         throw Exception("4th-order Runge-Kutta integration not valid for FACT algorithm");
@@ -61,9 +73,9 @@ public:
     float dot_threshold;
   };
 
-  FACT(const Shared &shared) : MethodBase(shared), S(shared), source(S.source) {}
+  FACT(const Shared &shared) : MethodBase(shared), S(shared), source(S.source, S.source_mask) {}
 
-  FACT(const FACT &that) : MethodBase(that.S), S(that.S), source(S.source) {}
+  FACT(const FACT &that) : MethodBase(that.S), S(that.S), source(S.source, S.source_mask) {}
 
   ~FACT() {}
 
@@ -77,7 +89,7 @@ public:
     return select_fixel(dir) >= S.threshold;
   }
 
-  term_t next() override {
+  std::optional<term_t> next() override {
     if (!get_data(source))
       return term_t::EXIT_IMAGE;
 
@@ -87,7 +99,7 @@ public:
       return term_t::MODEL;
 
     pos += S.step_size * dir;
-    return term_t::CONTINUE;
+    return std::nullopt;
   }
 
   float get_metric(const Eigen::Vector3f &position, const Eigen::Vector3f &direction) override {
@@ -124,7 +136,9 @@ protected:
     if (idx < 0)
       return (0.0);
 
-    d = {values[3 * idx], values[3 * idx + 1], values[3 * idx + 2]};
+    d = {values[3 * static_cast<size_t>(idx)],
+         values[3 * static_cast<size_t>(idx) + 1],
+         values[3 * static_cast<size_t>(idx) + 2]};
     d.normalize();
     if (max_dot < 0.0)
       d = -d;

@@ -15,10 +15,13 @@
  */
 
 #include "mrview/mode/volume.h"
+
 #include "file/config.h"
+#include "mrtrix.h"
 #include "mrview/adjust_button.h"
 #include "mrview/tool/base.h"
 #include "mrview/tool/view.h"
+#include "opengl/gl_core_3_3.h"
 #include "opengl/lighting.h"
 
 namespace MR::GUI::MRView::Mode {
@@ -49,10 +52,10 @@ std::string Volume::Shader::vertex_shader_source(const Displayable &) {
 std::string Volume::Shader::fragment_shader_source(const Displayable &object) {
   std::vector<std::pair<GL::vec4, bool>> clip = mode.get_active_clip_planes();
   const bool AND = mode.get_clipintersectionmodestate();
-  std::string clip_color_spec = File::Config::get("MRViewClipPlaneColour");
+  const auto clip_color_spec = File::Config::get("MRViewClipPlaneColour");
   std::vector<float> clip_color = {1.0, 0.0, 0.0, 0.1};
-  if (!clip_color_spec.empty()) {
-    auto colour = parse_floats(clip_color_spec);
+  if (clip_color_spec.has_value()) {
+    auto colour = parse_floats(clip_color_spec.value());
     if (colour.size() != 4)
       WARN("malformed config file entry for \"MRViewClipPlaneColour\" - expected 4 comma-separated values");
     clip_color = {static_cast<float>(colour[0]),
@@ -346,7 +349,7 @@ void Volume::paint(Projection &projection) {
     volume_VI.bind(gl::ELEMENT_ARRAY_BUFFER);
 
     gl::EnableVertexAttribArray(0);
-    gl::VertexAttribPointer(0, 3, gl::BYTE, gl::FALSE_, 4 * sizeof(GLbyte), (void *)0);
+    gl::VertexAttribPointer(0, 3, gl::BYTE, gl::FALSE_, 4 * sizeof(GLbyte), nullptr);
 
     static const std::array<GLbyte, 32> vertices = {                                                 //
                                                     0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0,  //
@@ -487,7 +490,7 @@ void Volume::paint(Projection &projection) {
 }
 
 inline Tool::View *Volume::get_view_tool() const {
-  Tool::Dock *dock = dynamic_cast<Tool::__Action__ *>(window().tools()->actions()[0])->dock;
+  Tool::Dock *dock = dynamic_cast<Tool::ActionWrapper *>(window().tools()->actions()[0])->dock;
   if (!dock)
     return nullptr;
   return dynamic_cast<Tool::View *>(dock->tool);

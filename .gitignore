@@ -16,6 +16,7 @@
 /dev/
 /compiled_docs/
 /.vscode/
+.claude
 .cproject
 .idea
 .project
@@ -31,7 +32,10 @@
 .__tmp.log
 .check_syntax.tmp
 .check_syntax2.tmp
+.run_pylint_tmp*
 build*/
 CMakeLists.txt.user
+CMakeUserPresets.json
 testing/data/tmp*
 testing/data/*-tmp-*
+testing/data/.mrtrix_testing.lock

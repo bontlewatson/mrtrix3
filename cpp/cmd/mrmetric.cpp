@@ -16,6 +16,7 @@
 
 #include "algo/loop.h"
 #include "algo/threaded_loop.h"
+#include "app.h"
 #include "command.h"
 #include "enum.h"
 #include "image.h"
@@ -199,9 +200,9 @@ void usage() {
     + Argument ("iteration method").type_choice<space_t>()
 
   + Option ("interp", std::string("set the interpolation method to use when reslicing") +
-                      " (choices: nearest, linear, cubic, sinc."
-                      " Default: " + MR::Interp::interp_choices[static_cast<ssize_t>(default_interp)] + ").")
-    + Argument ("method").type_choice(MR::Interp::interp_choices)
+                      " (choices: " + MR::Enum::join<MR::Interp::interp_type>() + "."
+                      " Default: " + MR::Enum::lowercase_name(default_interp) + ").")
+    + Argument ("method").type_choice<MR::Interp::interp_type>()
 
   + Option ("metric",
             "define the dissimilarity metric used to calculate the cost."
@@ -231,8 +232,7 @@ using MaskType = Image<bool>;
 
 void run() {
   const space_t space = get_option_choice<space_t>("space", default_space);
-  const MR::Interp::interp_type interp =
-      MR::Interp::interp_type(get_option_value<ssize_t>("interp", static_cast<ssize_t>(default_interp)));
+  const MR::Interp::interp_type interp = get_option_choice<MR::Interp::interp_type>("interp", default_interp);
 
   MetricType metric_type = MetricType::MeanSquared;
   const MetricChoice metric_choice = get_option_choice<MetricChoice>("metric", MetricChoice::DIFF);
@@ -244,8 +244,8 @@ void run() {
     metric_type = MetricType::CrossCorrelation;
   }
 
-  auto input1 = Image<value_type>::open(argument[0]).with_direct_io(Stride::contiguous_along_axis(3));
-  auto input2 = Image<value_type>::open(argument[1]).with_direct_io(Stride::contiguous_along_axis(3));
+  auto input1 = Image<value_type>::open(argument[0], DirectIO{Stride::contiguous_along_axis(3)});
+  auto input2 = Image<value_type>::open(argument[1], DirectIO{Stride::contiguous_along_axis(3)});
 
   const size_t dimensions = input1.ndim();
   if (input1.ndim() != input2.ndim())
@@ -290,7 +290,7 @@ void run() {
   Eigen::Matrix<value_type, Eigen::Dynamic, 1> sos = Eigen::Matrix<value_type, Eigen::Dynamic, 1>::Zero(volumes, 1);
   if (space == space_t::VOXEL) {
     INFO("per-voxel");
-    check_dimensions(input1, input2);
+    check_voxel_grids_match_in_scanner_space(input1, input2);
     if (!use_mask1 and !use_mask2)
       n_voxels = input1.size(0) * input1.size(1) * input1.size(2);
     evaluate_voxelwise_msq(input1, input2, mask1, mask2, dimensions, use_mask1, use_mask2, n_voxels, sos);

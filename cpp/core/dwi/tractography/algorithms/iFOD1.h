@@ -16,6 +16,10 @@
 
 #pragma once
 
+#include <filesystem>
+#include <optional>
+
+#include "dwi/tractography/ACT/act.h"
 #include "dwi/tractography/algorithms/calibrator.h"
 #include "dwi/tractography/tracking/method.h"
 #include "dwi/tractography/tracking/shared.h"
@@ -34,8 +38,10 @@ class iFOD1 : public MethodBase {
 public:
   class Shared : public SharedBase {
   public:
-    Shared(std::string_view diff_path, DWI::Tractography::Properties &property_set)
-        : SharedBase(diff_path, property_set),
+    Shared(const std::filesystem::path &diff_path, DWI::Tractography::Properties &property_set)
+        : SharedBase(diff_path,
+                     property_set,
+                     {ZeroExclusion::Enabled, NonFiniteExclusion::Any, HoleFilling::EnabledExcludeNonFinite}),
           lmax(Math::SH::LforN(source.size(3))),
           max_trials(Defaults::max_trials_per_step),
           sin_max_angle_1o(std::sin(max_angle_1o)),
@@ -67,6 +73,9 @@ public:
       sin_max_angle_1o = std::sin(max_angle_1o);
       set_num_points();
       set_cutoff(Defaults::cutoff_fod * (is_act() ? Defaults::cutoff_act_multiplier : 1.0));
+
+      if (is_act())
+        act().set_default_sgm_trunc(ACT::sgm_trunc_t::ROULETTE);
 
       properties["method"] = "iFOD1";
       properties.set(lmax, "lmax");
@@ -110,7 +119,7 @@ public:
   iFOD1(const Shared &shared)
       : MethodBase(shared),
         S(shared),
-        source(S.source),
+        source(S.source, S.source_mask),
         mean_sample_num(0),
         num_sample_runs(0),
         num_truncations(0),
@@ -152,7 +161,7 @@ public:
     return false;
   }
 
-  term_t next() override {
+  std::optional<term_t> next() override {
     if (!get_data(source))
       return term_t::EXIT_IMAGE;
 
@@ -186,12 +195,12 @@ public:
             max_truncation = val / max_val;
         }
 
-        if (uniform(rng) < val / max_val) {
+        if (uniform(rng()) < val / max_val) {
           dir = new_dir;
           dir.normalize();
           pos += S.step_size * dir;
           mean_sample_num += n;
-          return term_t::CONTINUE;
+          return std::nullopt;
         }
       }
     }

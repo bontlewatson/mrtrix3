@@ -14,13 +14,20 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
+#include <filesystem>
+#include <optional>
+
 #include "adapter/jacobian.h"
 #include "algo/copy.h"
 #include "algo/loop.h"
 #include "algo/threaded_copy.h"
+#include "app.h"
 #include "command.h"
+#include "debug.h"
 #include "dwi/directions/predefined.h"
+#include "dwi/directions/validate.h"
 #include "dwi/gradient.h"
+#include "enum.h"
 #include "file/matrix.h"
 #include "file/nifti_utils.h"
 #include "filter/reslice.h"
@@ -39,8 +46,7 @@
 #include "registration/transform/reorient.h"
 #include "registration/warp/compose.h"
 #include "registration/warp/helpers.h"
-
-#include <optional>
+#include "registration/warp/validate.h"
 
 using namespace MR;
 using namespace App;
@@ -152,9 +158,9 @@ void usage() {
 
     + Option ("interp",
         std::string("set the interpolation method to use when reslicing")
-        + " (choices: " + join(MR::Interp::interp_choices, ", ") + ";"
-        + " default: " + MR::Interp::interp_choices[static_cast<ssize_t>(default_interp)] + ").")
-      + Argument ("method").type_choice(MR::Interp::interp_choices)
+        + " (choices: " + MR::Enum::join<MR::Interp::interp_type>() + ";"
+        + " default: " + MR::Enum::lowercase_name(default_interp) + ").")
+      + Argument ("method").type_choice<MR::Interp::interp_type>()
 
     + Option ("oversample",
         "set the amount of over-sampling (in the target space) to perform when regridding."
@@ -219,7 +225,7 @@ void usage() {
         "directions defining the number and orientation of the apodised point spread functions"
         " used in FOD reorientation"
         " (Default: 300 directions)")
-    + Argument ("file", "a list of directions [az in] generated using the dirgen command.").type_file_in()
+    + Argument ("file", "a list of directions as [az in] or [x y z] rows.").type_file_in()
 
     + Option ("reorient_fod",
         "specify whether to perform FOD reorientation."
@@ -307,7 +313,7 @@ void run() {
       try {
         linear_transform = File::Matrix::load_transform(opt[0][0]);
       } catch (...) {
-        throw Exception("Unable to extract transform matrix from -replace file \"" + str(opt[0][0]) + "\"");
+        throw Exception("Unable to extract transform matrix from -replace file \"" + opt[0][0].as_text() + "\"");
       }
     }
   }
@@ -338,18 +344,23 @@ void run() {
   opt = get_options("warp_full");
   Image<default_type> warp;
   if (!opt.empty()) {
-    if (!Path::is_mrtrix_image(opt[0][0]) &&                    //
-        !(Path::has_suffix(opt[0][0], {".nii", ".nii.gz"}) &&   //
-          File::Config::get_bool("NIfTIAutoLoadJSON", false) && //
-          Path::exists(File::NIfTI::get_json_path(opt[0][0])))) {
-      WARN("warp_full image is not in original .mif/.mih file format or in NIfTI file format with associated JSON.  "
-           "Converting to other file formats may remove linear transformations stored in the image header.");
-    }
-    warp = Image<default_type>::open(opt[0][0]).with_direct_io();
-    Registration::Warp::check_warp_full(warp);
     if (linear)
       throw Exception("the -warp_full option cannot be applied in combination with -linear"
                       " since the linear transform is already included in the warp header");
+    if (!Path::is_mrtrix_image(opt[0][0]) &&                                 //
+        !(Path::has_suffix(opt[0][0], {".nii", ".nii.gz"}) &&                //
+          File::Config::get_bool("NIfTIAutoLoadJSON", false) &&              //
+          std::filesystem::exists(File::NIfTI::get_json_path(opt[0][0])))) { //
+      WARN("warp_full image is not in original .mif/.mih file format or in NIfTI file format with associated JSON;"
+           " converting to other file formats may remove linear transformations stored in the image header.");
+    }
+    Header H_warp = Header::open(opt[0][0]);
+    auto warp_format = Registration::Warp::validate_header(H_warp);
+    if (warp_format != Registration::Warp::WarpFormat::Full)
+      throw Exception("Input to -warp_full option must be a 5D \"full\" warp series,"
+                      " not a 4D deformation warp (see -warp option)");
+    warp = H_warp.get_image<default_type>(DirectIO(3));
+    Registration::Warp::debug_validate_image(warp);
   }
 
   // Warp from image1 or image2
@@ -366,11 +377,13 @@ void run() {
   if (!opt.empty()) {
     if (warp.valid())
       throw Exception("only one warp field can be input with either -warp or -warp_mid");
-    warp = Image<default_type>::open(opt[0][0]).with_direct_io(Stride::contiguous_along_axis(3));
-    if (warp.ndim() != 4)
-      throw Exception("the input -warp file must be a 4D deformation field");
-    if (warp.size(3) != 3)
-      throw Exception("the input -warp file must have 3 volumes in the 4th dimension (x,y,z positions)");
+    Header H_warp = Header::open(opt[0][0]);
+    auto warp_format = Registration::Warp::validate_header(H_warp);
+    if (warp_format != Registration::Warp::WarpFormat::Simple)
+      throw Exception("Input to -warp option must be a 4D deformation field,"
+                      " not a \"full\" warp (see -warp_full option)");
+    warp = H_warp.get_image<default_type>(DirectIO(3));
+    Registration::Warp::debug_validate_image(warp);
   }
 
   // Inverse
@@ -445,21 +458,21 @@ void run() {
   if (fod_reorientation && (linear || warp.valid() || template_header.valid()) && is_possible_fod_image) {
     CONSOLE("performing apodised PSF reorientation");
 
-    Eigen::MatrixXd directions_az_in;
     opt = get_options("directions");
-    directions_az_in =
-        opt.empty() ? DWI::Directions::electrostatic_repulsion_300() : File::Matrix::load_matrix(opt[0][0]);
-    Math::Sphere::spherical2cartesian(directions_az_in, directions_cartesian);
+    if (opt.empty()) {
+      directions_cartesian = Math::Sphere::spherical2cartesian(DWI::Directions::electrostatic_repulsion_300());
+    } else {
+      const Eigen::MatrixXd directions = File::Matrix::load_matrix(opt[0][0]);
+      DWI::Directions::validate(directions, opt[0][0], false);
+      directions_cartesian = Math::Sphere::as_cartesian(directions);
+    }
 
     // load with SH coeffients contiguous in RAM
     stride = Stride::contiguous_along_axis(3, input_header);
   }
 
   // Intensity / FOD modulation
-  opt = get_options("modulate");
-  const std::optional<Modulation> modulation =
-      opt.empty() ? std::nullopt
-                  : std::optional<Modulation>(get_option_choice<Modulation>("modulate", Modulation::FOD));
+  auto modulation = get_optional<Modulation>("modulate");
   const bool modulate_fod = modulation.has_value() && *modulation == Modulation::FOD;
   const bool modulate_jac = modulation.has_value() && *modulation == Modulation::JAC;
 
@@ -500,6 +513,7 @@ void run() {
     try {
       grad = DWI::get_DW_scheme(input_header);
     } catch (Exception &) {
+      DEBUG("No valid diffusion gradient table found");
     }
     if (grad.rows()) {
       try {
@@ -572,13 +586,9 @@ void run() {
   }
 
   // Interpolator
-  MR::Interp::interp_type interp = default_interp;
-  opt = get_options("interp");
-  if (!opt.empty()) {
-    interp = MR::Interp::interp_type(static_cast<MR::App::ParsedArgument::IntType>(opt[0][0]));
-    if (!warp && !template_header)
-      WARN("interpolator choice ignored since the input image will not be regridded");
-  }
+  const MR::Interp::interp_type interp = get_option_choice<MR::Interp::interp_type>("interp", default_interp);
+  if (!get_options("interp").empty() && !warp && !template_header)
+    WARN("interpolator choice ignored since the input image will not be regridded");
 
   // over-sampling
   std::vector<uint32_t> oversample = Adapter::AutoOverSample;
@@ -610,7 +620,7 @@ void run() {
       WARN("Out of bounds value ignored since the input image will not be regridded");
   }
 
-  auto input = input_header.get_image<float>().with_direct_io(stride);
+  auto input = input_header.get_image<float>(DirectIO{stride});
 
   // Reslice the image onto template
   if (template_header.valid() && !warp) {

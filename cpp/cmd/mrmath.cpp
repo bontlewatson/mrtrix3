@@ -14,14 +14,17 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
+#include <filesystem>
 #include <limits>
 
 #include "algo/threaded_loop.h"
 #include "command.h"
 #include "dwi/gradient.h"
 #include "enum.h"
+#include "exception.h"
 #include "image.h"
 #include "image_helpers.h"
+#include "math/entropy.h"
 #include "math/math.h"
 #include "math/median.h"
 #include "memory.h"
@@ -29,12 +32,26 @@
 #include "misc/voxel2vector.h"
 #include "progressbar.h"
 
-#include <limits>
-
 using namespace MR;
 using namespace App;
 
-enum class Operation { MEAN, MEDIAN, SUM, PRODUCT, RMS, NORM, VAR, STD, MIN, MAX, ABSMAX, MAGMAX };
+enum class Operation {
+  MEAN,
+  MEDIAN,
+  SUM,
+  PRODUCT,
+  RMS,
+  NORM,
+  VAR,
+  STD,
+  MIN,
+  MAX,
+  ABSMAX,
+  MAGMAX,
+  SHANNONS,
+  NATS,
+  HARTLEYS
+};
 
 // clang-format off
 void usage() {
@@ -58,7 +75,16 @@ void usage() {
       " min,"
       " max,"
       " absmax (maximum absolute value),"
-      " magmax (value with maximum absolute value, preserving its sign)."
+      " magmax (value with maximum absolute value, preserving its sign),"
+      " shannons (Shannon entropy in bits, using log base 2),"
+      " nats (Shannon entropy in nats, using natural logarithm),"
+      " hartleys (Shannon entropy in hartleys, using log base 10)."
+
+    + "For entropy operations,"
+      " the input values are first normalised to form a probability distribution"
+      " (non-finite and negative values are treated as zero),"
+      " and the Shannon entropy of this distribution is then computed"
+      " using the specified logarithmic base."
 
     + "This command is used to traverse either along an image axis,"
       " or across a set of input images,"
@@ -262,6 +288,31 @@ public:
   value_type max;
 };
 
+template <Math::Entropy::log_base_t logbase> class EntropyKernel {
+public:
+  void operator()(value_type val) {
+    if (!std::isnan(val))
+      values.push_back(val);
+  }
+  value_type result() const {
+    if (values.empty())
+      return NaNF;
+    if constexpr (logbase == Math::Entropy::log_base_t::TWO)
+      return static_cast<value_type>(Math::Entropy::shannons(values));
+    else if constexpr (logbase == Math::Entropy::log_base_t::E)
+      return static_cast<value_type>(Math::Entropy::nats(values));
+    else
+      return static_cast<value_type>(Math::Entropy::hartleys(values));
+  }
+
+private:
+  std::vector<value_type> values;
+};
+
+using EntropyBits = EntropyKernel<Math::Entropy::log_base_t::TWO>;
+using EntropyNits = EntropyKernel<Math::Entropy::log_base_t::E>;
+using EntropyDits = EntropyKernel<Math::Entropy::log_base_t::TEN>;
+
 template <class Operation> class AxisKernel {
 public:
   AxisKernel(size_t axis) : axis(axis) {}
@@ -321,9 +372,9 @@ protected:
 };
 
 void run() {
+  const std::filesystem::path first_input_image_path{argument[0]};
   const size_t num_inputs = argument.size() - 2;
   const Operation op = MR::Enum::from_name<Operation>(argument[num_inputs]);
-  const std::string_view output_path = argument.back();
 
   auto opt = get_options("axis");
   if (!opt.empty()) {
@@ -332,12 +383,11 @@ void run() {
       throw Exception("Option -axis only applies if a single input image is used");
 
     const size_t axis = opt[0][0];
-
-    auto image_in = Header::open(argument[0]).get_image<value_type>().with_direct_io(axis);
+    auto image_in = Header::open(first_input_image_path).get_image<value_type>(DirectIO{static_cast<int>(axis)});
 
     if (axis >= image_in.ndim())
-      throw Exception("Cannot perform operation along axis " + str(axis) + "; image only has " + str(image_in.ndim()) +
-                      " axes");
+      throw Exception("Cannot perform operation along axis " + str(axis) + ";" + //
+                      " image only has " + str(image_in.ndim()) + " axes");      //
 
     Header header_out(image_in);
 
@@ -345,7 +395,8 @@ void run() {
       try {
         const auto DW_scheme = DWI::parse_DW_scheme(header_out);
         DWI::stash_DW_scheme(header_out, DW_scheme);
-      } catch (...) {
+      } catch (Exception &) {
+        DEBUG("No diffusion gradient table to stash");
       }
       DWI::clear_DW_scheme(header_out);
       Metadata::PhaseEncoding::clear_scheme(header_out.keyval());
@@ -355,7 +406,7 @@ void run() {
     header_out.size(axis) = 1;
     squeeze_dim(header_out);
 
-    auto image_out = Header::create(output_path, header_out).get_image<float>();
+    auto image_out = Header::create(argument.back(), header_out).get_image<float>();
 
     auto loop = ThreadedLoop(
         std::string("computing ") + MR::Enum::lowercase_name(op) + " along axis " + str(axis) + "...", image_out);
@@ -397,6 +448,15 @@ void run() {
     case Operation::MAGMAX:
       loop.run(AxisKernel<MagMax>(axis), image_in, image_out);
       return;
+    case Operation::SHANNONS:
+      loop.run(AxisKernel<EntropyBits>(axis), image_in, image_out);
+      return;
+    case Operation::NATS:
+      loop.run(AxisKernel<EntropyNits>(axis), image_in, image_out);
+      return;
+    case Operation::HARTLEYS:
+      loop.run(AxisKernel<EntropyDits>(axis), image_in, image_out);
+      return;
     default:
       assert(0);
     }
@@ -410,7 +470,7 @@ void run() {
     std::vector<Header> headers_in(num_inputs);
 
     // Header of first input image is the template to which all other input images are compared
-    headers_in[0] = Header::open(argument[0]);
+    headers_in[0] = Header::open(first_input_image_path);
     Header header(headers_in[0]);
     header.datatype() = DataType::from_command_line(DataType::Float32);
 
@@ -422,20 +482,21 @@ void run() {
 
     // Verify that dimensions of all input images adequately match
     for (size_t i = 1; i != num_inputs; ++i) {
-      const std::string path = argument[i];
+      const std::filesystem::path path{argument[i]};
       // headers_in.push_back (std::unique_ptr<Header> (new Header (Header::open (path))));
       headers_in[i] = Header::open(path);
       const Header &temp(headers_in[i]);
       if (temp.ndim() < header.ndim())
-        throw Exception("Image " + path + " has fewer axes than first input image " + header.name());
+        throw Exception("Image " + path.string() + " has fewer axes than first imput image " + header.path().string());
       for (size_t axis = 0; axis != header.ndim(); ++axis) {
         if (temp.size(axis) != header.size(axis))
-          throw Exception("Dimensions of image " + path + " do not match those of first input image " + header.name());
+          throw Exception("Dimensions of image " + path.string() + " do not match those of first input image " +
+                          header.path().string());
       }
       for (size_t axis = header.ndim(); axis != temp.ndim(); ++axis) {
         if (temp.size(axis) != 1)
-          throw Exception("Image " + path + " has axis with non-unary dimension beyond first input image " +
-                          header.name());
+          throw Exception("Image " + path.string() + " has axis with non-unary dimension beyond first input image " +
+                          header.path().string());
       }
       header.merge_keyval(temp.keyval());
     }
@@ -479,6 +540,15 @@ void run() {
     case Operation::MAGMAX:
       kernel.reset(new ImageKernel<MagMax>(header));
       break;
+    case Operation::SHANNONS:
+      kernel.reset(new ImageKernel<EntropyBits>(header));
+      break;
+    case Operation::NATS:
+      kernel.reset(new ImageKernel<EntropyNits>(header));
+      break;
+    case Operation::HARTLEYS:
+      kernel.reset(new ImageKernel<EntropyDits>(header));
+      break;
     default:
       assert(0);
     }
@@ -496,7 +566,7 @@ void run() {
       }
     }
 
-    auto out = Header::create(output_path, header).get_image<value_type>();
+    auto out = Header::create(argument.back(), header).get_image<value_type>();
     kernel->write_back(out);
   }
 }

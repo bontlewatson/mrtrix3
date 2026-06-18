@@ -16,21 +16,22 @@
 
 #include "dwi/tractography/connectome/matrix.h"
 
+#include <filesystem>
+
+#include "enum.h"
 #include "file/matrix.h"
 #include "file/path.h"
 
 namespace MR::DWI::Tractography::Connectome {
 
-std::vector<std::string> statistics = {"sum", "mean", "min", "max"};
-
+// clang-format off
 const App::Option EdgeStatisticOption
-
     = App::Option("stat_edge",
                   "statistic for combining the values from all streamlines in an edge "
                   "into a single scale value for that edge "
-                  "(options are: " +
-                      join(statistics, ",") + "; default=sum)") +
-      App::Argument("statistic").type_choice(statistics);
+                  "(options are: " + MR::Enum::join<stat_edge>() + "; default=sum)")
+    + App::Argument("statistic").type_choice<stat_edge>();
+// clang-format on
 
 template <typename T> bool Matrix<T>::operator()(const Mapped_track_nodepair &in) {
   assert(assignments_lists.empty());
@@ -140,7 +141,7 @@ template <typename T> void Matrix<T>::finalize() {
   }
 }
 
-template <typename T> void Matrix<T>::error_check(const std::set<node_t> &missing_nodes) {
+template <typename T> void Matrix<T>::error_check(const std::vector<node_t> &missing_nodes) {
   // Don't bother looking for empty nodes if we're generating a
   //   connectivity vector from a seed region rather than a
   //   connectome from a whole-brain tractogram
@@ -157,17 +158,17 @@ template <typename T> void Matrix<T>::error_check(const std::set<node_t> &missin
   }
   std::vector<std::string> empty_nodes;
   for (node_t i = 1; i != visited.size(); ++i) {
-    if (!visited[i] && missing_nodes.find(i) == missing_nodes.end())
+    if (!visited[i] && std::find(missing_nodes.begin(), missing_nodes.end(), i) == missing_nodes.end())
       empty_nodes.push_back(str(i));
   }
   if (!empty_nodes.empty()) {
-    WARN("The following nodes do not have any streamlines assigned:");
+    WARN("The following nodes present in the parcellation do not have any streamlines assigned:");
     WARN(join(empty_nodes, ", "));
     WARN("(This may indicate a poor registration)");
   }
 }
 
-template <typename T> void Matrix<T>::write_assignments(std::string_view path) const {
+template <typename T> void Matrix<T>::write_assignments(const std::filesystem::path &path) const {
   if (!track_assignments)
     throw Exception("Cannot write streamline assignments to file as they were not stored during processing");
   File::OFStream stream(path);
@@ -186,7 +187,7 @@ template <typename T> void Matrix<T>::write_assignments(std::string_view path) c
 }
 
 template <typename T>
-void Matrix<T>::save(std::string_view path,
+void Matrix<T>::save(const std::filesystem::path &path,
                      const bool keep_unassigned,
                      const bool symmetric,
                      const bool zero_diagonal) const {
@@ -209,7 +210,7 @@ void Matrix<T>::save(std::string_view path,
 
   File::OFStream out(path);
   Eigen::IOFormat fmt(
-      Eigen::FullPrecision, Eigen::DontAlignCols, std::string(1, Path::delimiter(path)), "\n", "", "", "", "");
+      Eigen::FullPrecision, Eigen::DontAlignCols, std::string(1, File::Matrix::delimiter(path)), "\n", "", "", "", "");
   for (node_t row = 0; row != mat2vec->mat_size(); ++row) {
     if (!row && !keep_unassigned)
       continue;

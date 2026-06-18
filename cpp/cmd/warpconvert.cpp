@@ -14,14 +14,19 @@
  * For more details, see http://www.mrtrix.org/.
  */
 
+#include <filesystem>
+#include <optional>
+
 #include "adapter/extract.h"
 #include "command.h"
 #include "enum.h"
+#include "file/config.h"
 #include "file/nifti_utils.h"
 #include "image.h"
 #include "registration/warp/compose.h"
 #include "registration/warp/convert.h"
 #include "registration/warp/helpers.h"
+#include "registration/warp/validate.h"
 
 using namespace MR;
 using namespace App;
@@ -49,7 +54,7 @@ void usage() {
     " The warpfull file is the 5D format output from mrregister -nl_warp_full,"
     " which contains linear transforms, warps and their inverses"
     " that map each image to a midway space.";
-    //TODO at link to warp format documentation
+    //TODO add link to warp format documentation
 
   ARGUMENTS
   + Argument ("in", "the input warp image.").type_image_in()
@@ -86,41 +91,54 @@ void usage() {
 void run() {
   const ConversionType type = MR::Enum::from_name<ConversionType>(argument[1]);
   const bool midway_space = !get_options("midway_space").empty();
-  const std::string template_filename = get_option_value<std::string>("template", "");
+  auto template_filepath = get_optional<std::filesystem::path>("template");
   const int from = get_option_value("from", 1);
+
+  Header H_in = Header::open(argument[0]);
+  auto format = Registration::Warp::validate_header(H_in);
 
   switch (type) {
   case ConversionType::Deformation2Displacement: {
     if (midway_space)
       WARN("-midway_space option ignored with deformation2displacement conversion type");
-    if (!get_options("template").empty())
+    if (template_filepath.has_value())
       WARN("-template option ignored with deformation2displacement conversion type");
     if (!get_options("from").empty())
       WARN("-from option ignored with deformation2displacement conversion type");
 
-    auto deformation = Image<default_type>::open(argument[0]).with_direct_io(3);
-    Registration::Warp::check_warp(deformation);
+    if (format != Registration::Warp::WarpFormat::Simple)
+      throw Exception("Input to deformation2displacement operation"
+                      " must be a 4D deformation field image,"
+                      " not a 5D \"full\" warp format series");
 
-    Header header(deformation);
-    header.datatype() = DataType::from_command_line(DataType::Float32);
-    Image<default_type> displacement = Image<default_type>::create(argument[2], header).with_direct_io();
+    auto deformation = H_in.get_image<default_type>(DirectIO{3});
+    Registration::Warp::debug_validate_image(deformation);
+
+    Header H_out(H_in);
+    H_out.datatype() = DataType::from_command_line(DataType::Float32);
+    Image<default_type> displacement = Image<default_type>::create(argument[2], H_out, DirectIO{3});
+
     Registration::Warp::deformation2displacement(deformation, displacement);
     break;
   }
   case ConversionType::Displacement2Deformation: {
-    auto displacement = Image<default_type>::open(argument[0]).with_direct_io(3);
-    Registration::Warp::check_warp(displacement);
-
     if (midway_space)
       WARN("-midway_space option ignored with displacement2deformation conversion type");
-    if (!get_options("template").empty())
+    if (template_filepath.has_value())
       WARN("-template option ignored with displacement2deformation conversion type");
     if (!get_options("from").empty())
       WARN("-from option ignored with displacement2deformation conversion type");
 
-    Header header(displacement);
-    header.datatype() = DataType::from_command_line(DataType::Float32);
-    Image<default_type> deformation = Image<default_type>::create(argument[2], header).with_direct_io();
+    if (format != Registration::Warp::WarpFormat::Simple)
+      throw Exception("Input to displacement2deformation operation"
+                      " must be a 4D displacement field image,"
+                      " not a 5D \"full\" warp format series");
+    auto displacement = H_in.get_image<default_type>(DirectIO{3});
+    Registration::Warp::debug_validate_image(displacement);
+
+    Header H_out(displacement);
+    H_out.datatype() = DataType::from_command_line(DataType::Float32);
+    Image<default_type> deformation = Image<default_type>::create(argument[2], H_out, DirectIO{3});
     Registration::Warp::displacement2deformation(displacement, deformation);
     break;
   }
@@ -129,29 +147,33 @@ void run() {
     if (!Path::is_mrtrix_image(argument[0]) &&                  //
         !(Path::has_suffix(argument[0], {".nii", ".nii.gz"}) && //
           File::Config::get_bool("NIfTIAutoLoadJSON", false) && //
-          Path::exists(File::NIfTI::get_json_path(argument[0])))) {
+          std::filesystem::exists(File::NIfTI::get_json_path(argument[0])))) {
       WARN("warp_full image is not in original .mif/.mih file format or in NIfTI file format with associated JSON.  "
            "Converting to other file formats may remove linear transformations stored in the image header.");
     }
-    auto warp = Image<default_type>::open(argument[0]).with_direct_io(3);
-    Registration::Warp::check_warp_full(warp);
+    if (format != Registration::Warp::WarpFormat::Full)
+      throw Exception("Input to operation converting from a \"full\" warp format series"
+                      " must be a 5D image that conforms to that format"
+                      " rather than a simple 4D displacement / deformation field image");
+    auto warp = H_in.get_image<default_type>(DirectIO{3});
+    Registration::Warp::debug_validate_image(warp);
 
     Image<default_type> warp_output;
     if (midway_space) {
       warp_output = Registration::Warp::compute_midway_deformation(warp, from);
     } else {
-      if (get_options("template").empty())
+      if (!template_filepath.has_value())
         throw Exception("-template option required with warpfull2deformation or warpfull2displacement conversion type");
-      auto template_header = Header::open(template_filename);
+      auto template_header = Header::open(template_filepath.value());
       warp_output = Registration::Warp::compute_full_deformation(warp, template_header, from);
     }
 
     if (type == ConversionType::WarpFull2Displacement)
       Registration::Warp::deformation2displacement(warp_output, warp_output);
 
-    Header header(warp_output);
-    header.datatype() = DataType::from_command_line(DataType::Float32);
-    Image<default_type> output = Image<default_type>::create(argument[2], header);
+    Header H_out(warp_output);
+    H_out.datatype() = DataType::from_command_line(DataType::Float32);
+    Image<default_type> output = Image<default_type>::create(argument[2], H_out);
     threaded_copy_with_progress_message("converting warp", warp_output, output);
     break;
   }

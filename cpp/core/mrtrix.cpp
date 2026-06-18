@@ -16,7 +16,6 @@
 
 #include "mrtrix.h"
 
-#include <cstdarg>
 #include <string_view>
 
 namespace MR {
@@ -69,7 +68,7 @@ std::vector<default_type> parse_floats(std::string_view spec) {
 }
 
 std::vector<std::string>
-split(std::string_view string, std::string_view delimiters, bool ignore_empty_fields, size_t num) {
+split(std::string_view string, std::string_view delimiters, bool ignore_empty_fields, std::optional<size_t> num) {
   std::vector<std::string> V;
   if (string.empty())
     return V;
@@ -85,7 +84,7 @@ split(std::string_view string, std::string_view delimiters, bool ignore_empty_fi
       start = ignore_empty_fields ? string.find_first_not_of(delimiters, end + 1) : end + 1;
       if (start > string.size())
         break;
-      if (V.size() + 1 >= num) {
+      if (num.has_value() && V.size() + 1 >= *num) {
         V.emplace_back(std::string(string.substr(start)));
         break;
       }
@@ -100,7 +99,8 @@ namespace {
 
 // from https://www.geeksforgeeks.org/wildcard-character-matching/
 
-inline bool __match(std::string_view first, std::string_view second) {
+// NOLINTNEXTLINE(misc-no-recursion)
+inline bool _match(std::string_view first, std::string_view second) {
   // If we reach at the end of both strings, we are done
   if (first.empty() && second.empty())
     return true;
@@ -114,13 +114,13 @@ inline bool __match(std::string_view first, std::string_view second) {
   // If the first string contains '?', or current characters
   // of both strings match
   if (first[0] == '?' || first[0] == second[0])
-    return __match(first.substr(1), second.substr(1));
+    return _match(first.substr(1), second.substr(1));
 
   // If there is *, then there are two possibilities
   // a) We consider current character of second string
   // b) We ignore current character of second string.
   if (first[0] == '*')
-    return __match(first.substr(1), second) || __match(first, second.substr(1));
+    return _match(first.substr(1), second) || _match(first, second.substr(1));
 
   return false;
 }
@@ -129,9 +129,9 @@ inline bool __match(std::string_view first, std::string_view second) {
 
 bool match(std::string_view pattern, std::string_view text, bool ignore_case) {
   if (ignore_case)
-    return __match(lowercase(pattern), lowercase(text));
+    return _match(lowercase(pattern), lowercase(text));
   else
-    return __match(pattern, text);
+    return _match(pattern, text);
 }
 
 std::istream &getline(std::istream &stream, std::string &string) {
@@ -165,19 +165,6 @@ std::string uppercase(std::string_view string) {
   ret.resize(string.size());
   transform(string.begin(), string.end(), ret.begin(), toupper);
   return ret;
-}
-
-std::string printf(const char *format, ...) { // check_syntax off
-  size_t len = 0;
-  va_list list1, list2;
-  va_start(list1, format);
-  va_copy(list2, list1);
-  len = vsnprintf(nullptr, 0, format, list1) + 1;
-  va_end(list1);
-  VLA(buf, char, len);
-  vsnprintf(buf, len, format, list2);
-  va_end(list2);
-  return buf;
 }
 
 std::string strip(std::string_view string, std::string_view ws, bool left, bool right) {
@@ -215,7 +202,7 @@ void replace(std::string &str, std::string_view from, std::string_view to) {
   }
 }
 
-std::vector<std::string> split_lines(std::string_view string, bool ignore_empty_fields, size_t num) {
+std::vector<std::string> split_lines(std::string_view string, bool ignore_empty_fields, std::optional<size_t> num) {
   return split(string, "\n", ignore_empty_fields, num);
 }
 
@@ -243,7 +230,7 @@ bool is_dash(std::string_view arg) {
   return nbytes != 0 && nbytes == arg.size();
 }
 
-bool starts_with_dash(std::string_view arg) { return dash_bytes(arg.data()) != 0U; }
+bool starts_with_dash(std::string_view arg) { return dash_bytes(arg) != 0U; }
 
 std::string without_leading_dash(std::string_view arg) {
   std::string result(arg);

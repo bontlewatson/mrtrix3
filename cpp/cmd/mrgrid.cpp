@@ -16,6 +16,7 @@
 
 #include "adapter/regrid.h"
 #include "algo/copy.h"
+#include "app.h"
 #include "command.h"
 #include "enum.h"
 #include "filter/resize.h"
@@ -27,6 +28,8 @@
 #include "interp/nearest.h"
 #include "interp/sinc.h"
 #include "progressbar.h"
+
+#include <filesystem>
 #include <set>
 
 using namespace MR;
@@ -129,9 +132,9 @@ void usage() {
     + Argument ("factor").type_sequence_float()
 
     + Option ("interp", std::string("set the interpolation method to use when reslicing")
-                        + " (choices: " + join(MR::Interp::interp_choices, ", ") + ";"
-                        " default: " + MR::Interp::interp_choices[static_cast<ssize_t>(default_interp)] + ").")
-    + Argument ("method").type_choice (MR::Interp::interp_choices)
+                        + " (choices: " + MR::Enum::join<MR::Interp::interp_type>() + ";"
+                        " default: " + MR::Enum::lowercase_name(default_interp) + ").")
+    + Argument ("method").type_choice<MR::Interp::interp_type>()
 
     + Option ("oversample",
         "set the amount of over-sampling (in the target space) to perform when regridding."
@@ -202,7 +205,10 @@ void usage() {
 // clang-format on
 
 void run() {
-  auto input_header = Header::open(argument[0]);
+  const std::filesystem::path input_path{argument[0]};
+  const std::filesystem::path output_path{argument[2]};
+
+  auto input_header = Header::open(input_path);
 
   const Operation op = MR::Enum::from_name<Operation>(argument[1]);
   const std::string operation_name = MR::Enum::lowercase_name(op);
@@ -216,8 +222,7 @@ void run() {
     regrid_filter.set_out_of_bounds_value(out_of_bounds_value);
     size_t resize_option_count = 0;
     size_t template_option_count = 0;
-    const MR::Interp::interp_type interp =
-        MR::Interp::interp_type(get_option_value("interp", static_cast<ssize_t>(default_interp)));
+    const MR::Interp::interp_type interp = get_option_choice<MR::Interp::interp_type>("interp", default_interp);
 
     // over-sampling
     std::vector<uint32_t> oversample = Adapter::AutoOverSample;
@@ -232,7 +237,7 @@ void run() {
       if (template_header.ndim() < 3)
         throw Exception("the template image requires at least 3 spatial dimensions");
       add_line(regrid_filter.keyval()["comments"],
-               std::string("regridded to template image \"" + template_header.name() + "\""));
+               std::string("regridded to template image \"" + template_header.path().string() + "\""));
       for (auto i = 0; i < 3; ++i) {
         regrid_filter.spacing(i) = template_header.spacing(i);
         regrid_filter.size(i) = template_header.size(i);
@@ -419,7 +424,7 @@ void run() {
         try {
           delta = parse_ints<int>(opt[i][1]);
         } catch (Exception &E) {
-          Exception(E, "-axis " + str(axis) + ": can't parse delta specifier \"" + spec + "\"");
+          throw Exception(E, "-axis " + str(axis) + ": can't parse delta specifier \"" + spec + "\"");
         }
         if (delta.size() != 2)
           throw Exception("-axis " + str(axis) + ": can't parse delta specifier \"" + spec + "\"");
@@ -479,7 +484,7 @@ void run() {
     output_header.datatype() = DataType::from_command_line(DataType::from<float>());
     Stride::set_from_command_line(output_header);
 
-    auto output = Image<float>::create(argument[2], output_header);
+    auto output = Image<float>::create(output_path, output_header);
     threaded_copy_with_progress_message(message.c_str(), regridded, output);
   }
 }

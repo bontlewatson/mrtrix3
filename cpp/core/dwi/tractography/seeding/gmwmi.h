@@ -16,7 +16,10 @@
 
 #pragma once
 
+#include <filesystem>
+
 #include "dwi/tractography/ACT/gmwmi.h"
+#include "dwi/tractography/ACT/validate.h"
 #include "dwi/tractography/seeding/basic.h"
 #include "image.h"
 
@@ -28,7 +31,9 @@ namespace MR::DWI::Tractography::Seeding {
 
 class GMWMI_5TT_Wrapper {
 public:
-  GMWMI_5TT_Wrapper(std::string_view path) : anat_data(Image<float>::open(path)) {}
+  GMWMI_5TT_Wrapper(const std::filesystem::path &path) : anat_data(Image<float>::open(path)) {
+    ACT::debug_validate_5TT_image(anat_data);
+  }
   Image<float> anat_data;
 };
 
@@ -37,12 +42,12 @@ class GMWMI : public Base, private GMWMI_5TT_Wrapper, private ACT::GMWMI_finder 
 public:
   using ACT::GMWMI_finder::Interp;
 
-  GMWMI(std::string_view, std::string_view);
+  GMWMI(const std::filesystem::path &, const std::filesystem::path &);
 
   bool get_seed(Eigen::Vector3f &) const override;
 
 private:
-  Rejection init_seeder;
+  Rejection_per_voxel init_seeder;
   const float perturb_max_step;
 
   bool perturb(Eigen::Vector3f &, Interp &) const;

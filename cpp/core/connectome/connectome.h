@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "eigen_plugins/eigen_plugins.h"
 #include <Eigen/Dense>
 
 #include "app.h"
@@ -94,7 +95,5 @@ template <class MatrixType> void to_upper(MatrixType &in) {
     }
   }
 }
-
-void check(const Header &);
 
 } // namespace MR::Connectome

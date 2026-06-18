@@ -16,8 +16,11 @@
 
 #pragma once
 
+#include <filesystem>
+
 #include "app.h"
 #include "dwi/directions/predefined.h"
+#include "dwi/directions/validate.h"
 #include "dwi/gradient.h"
 #include "dwi/shells.h"
 #include "file/matrix.h"
@@ -25,6 +28,7 @@
 #include "math/SH.h"
 #include "math/ZSH.h"
 #include "math/least_squares.h"
+#include "math/sphere.h"
 
 namespace MR::DWI::SDeconv {
 
@@ -72,8 +76,11 @@ public:
       if (!opt.empty())
         init_filter = File::Matrix::load_vector(opt[0][0]);
       opt = get_options("directions");
-      if (!opt.empty())
-        HR_dirs = File::Matrix::load_matrix(opt[0][0]);
+      if (!opt.empty()) {
+        const Eigen::MatrixXd directions = File::Matrix::load_matrix(opt[0][0]);
+        DWI::Directions::validate(directions, opt[0][0], false);
+        HR_dirs = Math::Sphere::as_spherical(directions);
+      }
       opt = get_options("neg_lambda");
       if (!opt.empty())
         neg_lambda = opt[0][0];
@@ -88,8 +95,8 @@ public:
         niter = opt[0][0];
     }
 
-    void set_response(std::string_view path) {
-      INFO("loading response function from file \"" + path + "\"");
+    void set_response(const std::filesystem::path &path) {
+      INFO("loading response function from file \"" + path.string() + "\"");
       set_response(File::Matrix::load_vector(path));
     }
 

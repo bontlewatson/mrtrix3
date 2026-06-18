@@ -17,6 +17,7 @@
 #pragma once
 
 #include <atomic>
+#include <filesystem>
 #include <fstream>
 #include <queue>
 
@@ -24,6 +25,7 @@
 #include "dwi/fmls.h"
 #include "dwi/tractography/ACT/gmwmi.h"
 #include "dwi/tractography/ACT/tissues.h"
+#include "dwi/tractography/ACT/validate.h"
 #include "dwi/tractography/SIFT/model_base.h"
 #include "dwi/tractography/file.h"
 #include "dwi/tractography/mapping/voxel.h"
@@ -152,12 +154,18 @@ private:
 class Dynamic_ACT_additions {
 
 public:
-  Dynamic_ACT_additions(std::string_view path)
-      : interp_template(Image<float>::open(path)), gmwmi_finder(interp_template) {}
+  Dynamic_ACT_additions(const std::filesystem::path &path)
+      : image(Image<float>::open(path)), interp_template(image), gmwmi_finder(interp_template) {
+    ACT::debug_validate_5TT_image(image);
+    image = Image<float>();
+  }
 
   bool check_seed(Eigen::Vector3f &);
 
 private:
+  // Only held temporarily for debugging checks at construction
+  Image<float> image;
+
   Interp::Linear<Image<float>> interp_template;
   ACT::GMWMI_finder gmwmi_finder;
 };
@@ -173,7 +181,7 @@ private:
   using VoxelAccessor = Fixel_map<Fixel>::VoxelAccessor;
 
 public:
-  Dynamic(std::string_view, Image<float> &, const size_t, const DWI::Directions::FastLookupSet &);
+  Dynamic(const std::filesystem::path &, Image<float> &, const size_t, const DWI::Directions::FastLookupSet &);
   ~Dynamic();
 
   Dynamic(const Dynamic &) = delete;
@@ -236,8 +244,10 @@ private:
 
 class WriteKernelDynamic : public Tracking::WriteKernel {
 public:
-  WriteKernelDynamic(const Tracking::SharedBase &shared, std::string_view output_file, const Properties &properties)
-      : Tracking::WriteKernel(shared, output_file, properties) {}
+  WriteKernelDynamic(const Tracking::SharedBase &shared,
+                     const std::filesystem::path &output_path,
+                     const Properties &properties)
+      : Tracking::WriteKernel(shared, output_path, properties) {}
   WriteKernelDynamic(const WriteKernelDynamic &) = delete;
   WriteKernelDynamic &operator=(const WriteKernelDynamic &) = delete;
   bool operator()(const Tracking::GeneratedTrack &, Streamline<> &);

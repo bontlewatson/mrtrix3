@@ -15,6 +15,7 @@
  */
 
 #include "command.h"
+#include "dwi/directions/validate.h"
 #include "dwi/gradient.h"
 #include "dwi/shells.h"
 #include "file/matrix.h"
@@ -23,6 +24,7 @@
 #include "progressbar.h"
 
 #include "dwi/directions/file.h"
+#include <filesystem>
 
 using namespace MR;
 using namespace App;
@@ -105,17 +107,18 @@ int precision = 6;
 void report(std::string_view title, Eigen::MatrixXd &directions);
 
 void run() {
+  const std::filesystem::path dirs_input_path{argument[0]};
+
   Eigen::MatrixXd directions;
 
   try {
-    directions = DWI::Directions::load_cartesian(argument[0]);
+    directions = File::Matrix::load_matrix<double>(argument[0]);
+    DWI::Directions::validate(directions, argument[0], true);
+    if (directions.cols() == 2)
+      directions = Math::Sphere::spherical2cartesian(directions);
   } catch (Exception &E) {
-    try {
-      directions = File::Matrix::load_matrix<double>(argument[0]);
-    } catch (Exception &E) {
-      auto header = Header::open(argument[0]);
-      directions = DWI::get_DW_scheme(header);
-    }
+    auto header = Header::open(argument[0]);
+    directions = DWI::get_DW_scheme(header);
   }
 
   if (directions.cols() >= 4) {
@@ -124,7 +127,7 @@ void run() {
     if (get_options("shells").empty() && shells.has_bzero() && shells.count() > 1) {
       n_start = 1;
       if (get_options("output").empty())
-        print(std::string(argument[0]) + " (b=0) [ " + str(shells.smallest().count(), precision) + " volumes ]\n\n");
+        print(dirs_input_path.string() + " (b=0) [ " + str(shells.smallest().count(), precision) + " volumes ]\n\n");
     }
 
     Eigen::MatrixXd dirs;
@@ -134,11 +137,11 @@ void run() {
       for (size_t idx = 0; idx < shells[n].count(); ++idx)
         dirs.row(idx) = directions.row(shells[n].get_volumes()[idx]).head(3);
 
-      report(std::string(argument[0]) + " (b=" + str(shells[n].get_mean()) + ")", dirs);
+      report(dirs_input_path.string() + " (b=" + str(shells[n].get_mean()) + ")", dirs);
     }
 
   } else
-    report(argument[0], directions);
+    report(dirs_input_path.string(), directions);
 }
 
 std::vector<default_type> summarise_NN(const std::vector<double> &NN) {
@@ -178,7 +181,7 @@ public:
 
 Metrics compute(Eigen::MatrixXd &directions) {
   if (directions.cols() < 3)
-    throw Exception("unexpected matrix size for scheme \"" + str(argument[0]) + "\"");
+    throw Exception("unexpected matrix size for scheme \"" + argument[0].as_text() + "\"");
   Math::Sphere::normalise_cartesian(directions);
 
   std::vector<double> NN_bipolar(directions.rows(), -1.0);

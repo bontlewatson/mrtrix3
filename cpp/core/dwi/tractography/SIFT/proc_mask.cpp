@@ -18,6 +18,7 @@
 
 #include "algo/copy.h"
 #include "algo/threaded_loop.h"
+#include "dwi/tractography/ACT/validate.h"
 #include "transform.h"
 
 namespace MR::DWI::Tractography::SIFT {
@@ -48,8 +49,10 @@ void initialise_processing_mask(Image<float> &in_dwi, Image<float> &out_mask, Im
     auto opt = App::get_options("act");
     if (!opt.empty()) {
 
-      auto in_5tt = Image<float>::open(opt[0][0]);
-      ACT::verify_5TT_image(in_5tt);
+      Header H_5ttin = Header::open(opt[0][0]);
+      ACT::validate_5TT_header(H_5ttin);
+      auto in_5tt = H_5ttin.get_image<float>();
+      ACT::debug_validate_5TT_image(in_5tt);
 
       Header H_5tt(in_dwi);
       H_5tt.ndim() = 4;
@@ -72,8 +75,8 @@ void initialise_processing_mask(Image<float> &in_dwi, Image<float> &out_mask, Im
       out_5tt.index(3) = 2; // Access the WM fraction
       float integral = 0.0f;
       for (auto l = Loop(out_5tt, 0, 3)(out_5tt, out_mask); l; ++l) {
-        const float value =
-            Math::pow2<float>(out_5tt.value()); // Processing mask value is the square of the WM fraction
+        // Processing mask value is the square of the WM fraction
+        const float value = Math::pow2<float>(out_5tt.value());
         if (std::isfinite(value)) {
           out_mask.value() = value;
           integral += value;
