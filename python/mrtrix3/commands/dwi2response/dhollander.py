@@ -121,7 +121,7 @@ def execute(): #pylint: disable=unused-variable
               f'{",".join(map(str,bvalues))} with {",".join(map(str,bvolumes))} volumes')
   if len(bvalues) < 2:
     raise MRtrixError('Need at least 2 unique b-values (including b=0).')
-  bvalues_option = f' -shells {",".join(map(str,bvalues))}'
+  bvalues_opt = f' -shells {",".join(map(str,bvalues))}'
 
   # Get lmax information (if provided).
   sfwm_lmax_option = ''
@@ -139,7 +139,6 @@ def execute(): #pylint: disable=unused-variable
 
   # get model estimation (if provided)
   model_opt = ''
-  bvalues_opt = bvalues_option
 
   if app.ARGS.model == 'stretched_exp':
     model_opt = ' -stretched_exp'
@@ -340,11 +339,11 @@ def execute(): #pylint: disable=unused-variable
       else:   # stretched exponential model
         ewr.write (f'SE {refwmamp} 2 0 0.5\n')
 
-    run.command('dwi2fod msmt_csd dwi.mif ewmrf.txt abs_ewm2.mif response_csf.txt abs_csf2.mif -mask refined_wm.mif -lmax 2,0' + bvalues_option, show=False)
+    run.command('dwi2fod msmt_csd dwi.mif ewmrf.txt abs_ewm2.mif response_csf.txt abs_csf2.mif -mask refined_wm.mif -lmax 2,0' + bvalues_opt, show=False)
     run.command('mrconvert abs_ewm2.mif - -coord 3 0 | mrcalc - abs_csf2.mif -add abs_sum2.mif', show=False)
     run.command('sh2peaks abs_ewm2.mif - -num 1 -mask refined_wm.mif | peaks2amp - - | mrcalc - abs_sum2.mif -divide - | mrconvert - metric_sfwm2.mif -coord 3 0 -axes 0,1,2', show=False)
     run.command(f'mrcalc refined_wm.mif metric_sfwm2.mif 0 -if - | mrthreshold - - -top {2*voxsfwmcount} -ignorezero | mrcalc refined_wm.mif - 0 -if - -datatype bit | mrconvert - refined_sfwm.mif -axes 0,1,2', show=False)
-    run.command('dwi2fod msmt_csd dwi.mif ewmrf.txt abs_ewm6.mif response_csf.txt abs_csf6.mif -mask refined_sfwm.mif -lmax 6,0' + bvalues_option, show=False)
+    run.command('dwi2fod msmt_csd dwi.mif ewmrf.txt abs_ewm6.mif response_csf.txt abs_csf6.mif -mask refined_sfwm.mif -lmax 6,0' + bvalues_opt, show=False)
     run.command('mrconvert abs_ewm6.mif - -coord 3 0 | mrcalc - abs_csf6.mif -add abs_sum6.mif', show=False)
     run.command('sh2peaks abs_ewm6.mif - -num 1 -mask refined_sfwm.mif | peaks2amp - - | mrcalc - abs_sum6.mif -divide - | mrconvert - metric_sfwm6.mif -coord 3 0 -axes 0,1,2', show=False)
     run.command(f'mrcalc refined_sfwm.mif metric_sfwm6.mif 0 -if - | mrthreshold - - -top {voxsfwmcount} -ignorezero | mrcalc refined_sfwm.mif - 0 -if - -datatype bit | mrconvert - voxels_sfwm.mif -axes 0,1,2', show=False)

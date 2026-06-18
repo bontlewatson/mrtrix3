@@ -118,12 +118,6 @@ std::vector<size_t> all_volumes(const size_t num) {
   return result;
 }
 
-static void append(Eigen::VectorXd &shared, const Eigen::VectorXd &accumulate) {
-  Eigen::Index s_length = shared.size();
-  shared.conservativeResize(s_length + accumulate.size());
-  shared.tail(accumulate.size()) = accumulate;
-}
-
 // signal approximation accounting for Rician Noise
 inline double add_noise_bias(double clean, double noiseStd) {
   double rp = 2.25;
@@ -241,10 +235,10 @@ public:
 
   ~SE_Accumulator() {
     // accumulate results from all threads:
-    append(S.amplitudes, Eigen::Map<const Eigen::VectorXd>(amplitudes.data(), amplitudes.size()));
-    append(S.sin_elevations, Eigen::Map<const Eigen::VectorXd>(sin_elevations.data(), sin_elevations.size()));
-    append(S.cos_elevations, Eigen::Map<const Eigen::VectorXd>(cos_elevations.data(), cos_elevations.size()));
-    append(S.bvalues, Eigen::Map<const Eigen::VectorXd>(bvals.data(), bvals.size()));
+    append(S.amplitudes, amplitudes);
+    append(S.sin_elevations, sin_elevations);
+    append(S.cos_elevations, cos_elevations);
+    append(S.bvalues, bvals);
     S.count += count;
   }
 
@@ -293,6 +287,13 @@ protected:
   size_t count;
   std::vector<double> amplitudes, bvals, cos_elevations, sin_elevations;
   Eigen::Matrix<default_type, Eigen::Dynamic, 3> rotated_dirs_cartesian;
+
+  void append(Eigen::VectorXd &shared, const std::vector<double> &accumulate) {
+    const Eigen::Index s_length = shared.size();
+    shared.conservativeResize(s_length + accumulate.size());
+    for (Eigen::Index n = 0; n < accumulate.size(); ++n)
+      shared[n + s_length] = accumulate[n];
+  }
 };
 
 // stretched exponential functor for levenberg-marquardt algorithm
@@ -610,7 +611,7 @@ void run() {
 
     noiseStd = mean_maxb_amp / add_noise_bias(0.0, 1.0);
 
-    DEBUG("fitting paramters of stretched exponential model to signals...");
+    DEBUG("fitting parameters of stretched exponential model to signals...");
 
     // levenberg-marquart solver:
     LMFunctor functor(
