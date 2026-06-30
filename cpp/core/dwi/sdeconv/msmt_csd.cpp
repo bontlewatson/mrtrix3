@@ -33,6 +33,11 @@ const OptionGroup MSMT_CSD_options =
              "of the non-negativity constraint"
              " (default = " + str(default_msmt_neglambda, 2) + ").")
       + Argument("value").type_float(0.0)
+      
+    // TODO: add option for gradient nonlinearities
+    + Option("grad_nonlin",
+             "input the gradient nonlinearity image (i.e. gradient deviation field)")
+      + Argument("image").type_image_in()
 
     + Option("predicted_signal",
              "output the predicted dwi image.")

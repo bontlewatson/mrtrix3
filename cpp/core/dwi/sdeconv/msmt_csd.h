@@ -16,9 +16,10 @@
 
 #pragma once
 
-#include "eigen_plugins/eigen_plugins.h"
 #include <Eigen/Dense>
+#include <optional>
 
+#include "eigen_plugins/eigen_plugins.h"
 #include "dwi/directions/predefined.h"
 #include "dwi/directions/validate.h"
 #include "dwi/gradient.h"
@@ -26,6 +27,7 @@
 #include "dwi/shells.h"
 #include "file/matrix.h"
 #include "header.h"
+#include "image.h"
 #include "math/SH.h"
 #include "math/ZSH.h"
 #include "math/constrained_least_squares.h"
@@ -68,6 +70,15 @@ public:
       opt = get_options("neg_lambda");
       if (!opt.empty())
         constraint_min_norm_regularisation = opt[0][0];
+      //TODO: parse GNL image
+      opt = get_options("grad_nonlin");
+      if (!opt.empty()){
+        grad_dev = Image<float>::open(opt[0][0]);
+        // check image dimensions are as expected
+        if (grad_dev.ndim()!=4 || grad_dev.size(3)!=9)
+          throw Exception("the gradient deviation image provided must be a 4D image with 9 volumes.");
+        use_GNL = true;
+      }
     }
 
     void set_responses(const std::vector<std::filesystem::path> &paths) {
@@ -88,43 +99,34 @@ public:
       response_files = paths;
     }
 
-    void init() {
-      if (lmax.empty()) {
-        lmax = lmax_response; // from prepare_response / SEResponse
-        for (size_t t = 0; t != num_tissues(); ++t) {
-          lmax[t] = std::min(default_msmt_lmax, lmax[t]);
-        }
-      } else {
-        if (lmax.size() != num_tissues())
-          throw Exception("Number of lmaxes specified (" + str(lmax.size()) + ") does not match number of tissues (" +
-                          str(num_tissues()) + ")");
-        for (const auto i : lmax) {
-          if (i % 2)
-            throw Exception("Each value of lmax must be a non-negative even integer");
-        }
-      }
-
-      //////////////////////////////////////////////////
-      // Set up the constrained least squares problem //
-      //////////////////////////////////////////////////
-
-      size_t nparams = 0;
-      uint32_t maxlmax = 0;
-      for (size_t i = 0; i < num_tissues(); i++) {
-        nparams += Math::SH::NforL(lmax[i]);
-        maxlmax = std::max(maxlmax, lmax[i]);
-      }
+    // build the C matrix (option for voxel-dependent construction for GNL corrections)
+    Eigen::MatrixXd build_C(size_t nparams,
+                            uint32_t maxlmax,
+                            const std::optional<Eigen::Vector3i>& vox = std::nullopt) {
 
       INFO("initialising multi-tissue CSD for " + str(num_tissues()) + " tissue types, with " + str(nparams) +
            " parameters");
 
-      Eigen::MatrixXd C = Eigen::MatrixXd::Zero(grad.rows(), nparams);
+      Eigen::MatrixXd C_local = Eigen::MatrixXd::Zero(grad.rows(), nparams);
+
+      // gradient table
+      Eigen::MatrixXd grad_local(grad.rows(), grad.cols());
+      // in the case of GNL corrections:
+      if (use_GNL && vox.has_value()) {
+        GNL gnl(*this);
+        Eigen::Matrix3d L_local;
+        gnl.compute_L(L_local, *vox);
+        gnl.correct_grad(grad_local, L_local);
+      } else {
+        // use a constant gradient table
+        grad_local = grad;
+      }
 
       std::vector<size_t> dwilist;
       for (size_t i = 0; i != static_cast<size_t>(grad.rows()); i++)
         dwilist.push_back(i);
 
-      Eigen::MatrixXd directions = DWI::gen_direction_matrix(grad, dwilist);
+      Eigen::MatrixXd directions = DWI::gen_direction_matrix(grad_local, dwilist);
       Eigen::MatrixXd SHT = Math::SH::init_transform(directions, maxlmax);
       for (ssize_t i = 0; i < SHT.rows(); i++)
         for (ssize_t j = 0; j < SHT.cols(); j++)
@@ -135,7 +137,7 @@ public:
 
       if (responses.size()) {
         // assume shell structure:
-        DWI::Shells shells(grad);
+        DWI::Shells shells(grad_local);
         shells.select_shells(false, false, false);
 
         for (size_t t = 0; t != num_tissues(); ++t) {
@@ -191,7 +193,8 @@ public:
           const size_t shell_idx = responses.size() ? shell_for_vol[vol] : 0;
           if (responses.empty())
             // computes se SH->RH coefficients for each (b,g)
-            se_responses[tissue_idx].compute_SH_coeff(se_R, workspace, grad(vol, 3));
+            //TODO: if using GNL corrections - supply corrected bval for this voxel
+            se_responses[tissue_idx].compute_SH_coeff(se_R, workspace, grad_local(vol,3));
 
           int li = 0;
           int mi = 0;
@@ -206,11 +209,49 @@ public:
 
           Eigen::VectorXd SHT_row(SHT.row(vol).head(tissue_n));
           SHT_row.array() *= fconv.array();
-          C.row(vol).segment(pbegin, tissue_n) = SHT_row;
+          C_local.row(vol).segment(pbegin, tissue_n) = SHT_row;
         }
         pbegin += tissue_n;
       }
+      return C_local;
+    }
 
+    void init(const std::optional<Eigen::Vector3i>& vox = std::nullopt) {
+      if (lmax.empty()) {
+        lmax = lmax_response; // from prepare_response / SEResponse
+        for (size_t t = 0; t != num_tissues(); ++t) {
+          lmax[t] = std::min(default_msmt_lmax, lmax[t]);
+        }
+      } else {
+        if (lmax.size() != num_tissues())
+          throw Exception("Number of lmaxes specified (" + str(lmax.size()) +
+              ") does not match number of tissues (" + str(num_tissues()) + ")");
+        for (const auto i : lmax) {
+          if (i % 2)
+            throw Exception("Each value of lmax must be a non-negative even integer");
+        }
+      }
+      // ensure GNL correction only implemented with SE responses
+      if (use_GNL && responses.size())
+        throw Exception("Gradient nonlinearity correction is only supported using the SE response function.");
+
+      //////////////////////////////////////////////////
+      // Set up the constrained least squares problem //
+      //////////////////////////////////////////////////
+
+      size_t nparams = 0;
+      uint32_t maxlmax = 0;
+      for (size_t i = 0; i < num_tissues(); i++) {
+        nparams += Math::SH::NforL(lmax[i]);
+        maxlmax = std::max(maxlmax, lmax[i]);
+      }
+
+      if (use_GNL && !vox.has_value())
+        throw Exception("A voxel position is required to implement GNL-corrections.");
+      Eigen::MatrixXd C;
+      C = use_GNL ? build_C(nparams, maxlmax,vox) : build_C(nparams, maxlmax);
+
+      // non-negativity constraint:
       std::vector<size_t> m(num_tissues());
       std::vector<size_t> n(num_tissues());
       size_t M = 0;
@@ -236,10 +277,16 @@ public:
         b_m += m[i];
         b_n += n[i];
       }
-      problem = Math::ICLS::Problem<double>(
-          C, A, Eigen::VectorXd(), 0, solution_min_norm_regularisation, constraint_min_norm_regularisation);
+
+      //TODO: voxel-wise problem matrix for GNL corrections
+      if (!use_GNL){
+        problem = Math::ICLS::Problem<double>(
+            C, A, Eigen::VectorXd(), 0, solution_min_norm_regularisation, constraint_min_norm_regularisation);
 
       INFO("Multi-shell, multi-tissue CSD initialised successfully");
+      } else {
+        // setup the problem for each voxel
+      }
     }
 
     size_t num_tissues() const {
@@ -259,6 +306,8 @@ public:
     std::vector<std::filesystem::path> response_files;
     Math::ICLS::Problem<double> problem;
     double solution_min_norm_regularisation, constraint_min_norm_regularisation;
+    Image<float> grad_dev;
+    bool use_GNL = false;
 
   private:
     void prepare_responses() {
@@ -292,9 +341,68 @@ public:
     }
   };
 
+  class GNL {
+    public:
+      GNL(const Shared &shared) : shared(shared) {}
+
+      // compute the L tensor from grad_dev image at a voxel pos
+      void compute_L(Eigen::Matrix3d &L, const Eigen::Vector3i& vox) const {
+        // assuming L(x) stored as [Lxx, Lxy, Lxz, Lyx, Lyy, Lyz, Lzx, Lzy, Lzz]
+        auto img = shared.grad_dev;
+
+        img.index(0) = vox[0];
+        img.index(1) = vox[1];
+        img.index(2) = vox[2];
+
+        for (int i = 0; i < 9; ++i) {
+          img.index(3) = i;
+          L(i / 3, i % 3) = img.value();
+        }
+      }
+
+      // compute the corrected gradient information & bvalues at a voxel pos
+      void correct_grad(Eigen::MatrixXd &grad_corr, const Eigen::Matrix3d &L) const {
+        assert(grad_corr.size() == shared.grad.size());
+        const Eigen::Matrix3d IL = Eigen::Matrix3d::Identity()+L;
+
+        for (int N = 0; N < shared.grad.rows(); ++N) {
+          const double b = shared.grad(N,3);
+          const Eigen::Vector3d bv = shared.grad.row(N).head<3>();
+          // account for left-handed system, i.e. flip the x-axis
+          const Eigen::Vector3d v = flipMat() * bv ;
+          const Eigen::Vector3d g = IL*v;
+          const double g_norm = g.norm();
+
+          if (g_norm > 0.0) {
+            grad_corr.row(N).head<3>() = g / g_norm;
+            grad_corr(N,3) = b * g_norm * g_norm;
+          } else {
+            grad_corr.row(N).setZero();
+          }
+        }
+      }
+
+      // flip matrix for -ve x-axis:
+      static const Eigen::Matrix3d& flipMat() {
+        static const Eigen::Matrix3d mat = (Eigen::Matrix3d() <<
+            1, -1, -1,
+            -1,  1,  1,
+            -1,  1,  1).finished();
+        return mat;
+      }
+
+    private:
+      const Shared &shared;
+
+  };
+
   MSMT_CSD(const Shared &shared_data) : niter(0), shared(shared_data), solver(shared.problem) {}
 
-  void operator()(const Eigen::VectorXd &data, Eigen::VectorXd &output) { niter = solver(output, data); }
+  void operator()(const Eigen::VectorXd &data, Eigen::VectorXd &output) {
+    if(!shared.use_GNL)
+      niter = solver(output, data);
+  }
+  //TODO: voxel-wise solver solve
 
   size_t niter;
   const Shared &shared;
