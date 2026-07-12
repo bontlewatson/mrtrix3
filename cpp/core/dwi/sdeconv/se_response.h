@@ -33,6 +33,9 @@ public:
   SEResponse() {}
   SEResponse(const std::string &filename) { load(filename); }
   SEResponse(SEResponse &&other) = default;
+  //copy constructors for the gnl correction implementation (build C matrix)
+  SEResponse(const SEResponse &other) = default;
+  SEResponse &operator=(const SEResponse &other) = default;
 
   // for a given bval, compute the SH coefficients for RF
   void compute_SH_coeff(Eigen::VectorXd &sh_coeffs,Eigen::VectorXd &signals, const double bval) const {

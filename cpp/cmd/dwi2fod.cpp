@@ -222,7 +222,11 @@ public:
 
     dwi_data = dwi_image.row(3);
 
-    sdeconv(dwi_data, output_data);
+    if(!sdeconv.shared.grad_dev.valid())
+      sdeconv(dwi_data, output_data);
+      else{
+        sdeconv(dwi_data, output_data, Eigen::Vector3i(dwi_image.index(0),dwi_image.index(1),dwi_image.index(2)));
+      }
     if (sdeconv.niter >= sdeconv.shared.problem.max_niter) {
       INFO("voxel [ " + str(dwi_image.index(0)) + " " + str(dwi_image.index(1)) + " " + str(dwi_image.index(2)) +
            " ] did not reach full convergence");
