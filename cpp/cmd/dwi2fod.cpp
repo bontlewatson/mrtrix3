@@ -222,11 +222,8 @@ public:
 
     dwi_data = dwi_image.row(3);
 
-    if(!sdeconv.shared.grad_dev.valid())
-      sdeconv(dwi_data, output_data);
-      else{
-        sdeconv(dwi_data, output_data, Eigen::Vector3i(dwi_image.index(0),dwi_image.index(1),dwi_image.index(2)));
-      }
+    sdeconv(dwi_data, output_data, Eigen::Vector3i(dwi_image.index(0), dwi_image.index(1), dwi_image.index(2)));
+    
     if (sdeconv.niter >= sdeconv.shared.problem.max_niter) {
       INFO("voxel [ " + str(dwi_image.index(0)) + " " + str(dwi_image.index(1)) + " " + str(dwi_image.index(2)) +
            " ] did not reach full convergence");
@@ -239,7 +236,8 @@ public:
         odf_images[i].value() = output_data[j++];
     }
 
-    if (modelled_image.valid()) {
+    // TODO: change for gnl scheme
+    if (modelled_image.valid() && !sdeconv.shared.grad_dev.valid()) {
       assign_pos_of(dwi_image, 0, 3).to(modelled_image);
       dwi_data = sdeconv.shared.problem.H * output_data;
       modelled_image.row(3) = dwi_data;

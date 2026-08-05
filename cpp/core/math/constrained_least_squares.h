@@ -87,14 +87,34 @@ public:
           value_type constraint_min_norm_regularisation = 0.0,
           size_t max_iterations = 0,
           value_type tolerance = 0.0,
-          bool problem_in_standard_form = false)
-      : H(problem_matrix),
-        chol_HtH(H.cols(), H.cols()),
-        t(inequality_constraint_vector),
-        lambda_min_norm(constraint_min_norm_regularisation),
-        tol(tolerance),
-        max_niter(max_iterations ? max_iterations : 10 * problem_matrix.cols()),
-        num_eq(num_equalities) {
+          bool problem_in_standard_form = false) {
+    init(problem_matrix,
+         inequality_constraint_matrix,
+         inequality_constraint_vector,
+         num_equalities,
+         solution_min_norm_regularisation,
+         constraint_min_norm_regularisation,
+         max_iterations,
+         tolerance,
+         problem_in_standard_form);
+  }
+
+  void init(const matrix_type &problem_matrix,
+            const matrix_type &inequality_constraint_matrix,
+            const vector_type &inequality_constraint_vector = vector_type(),
+            size_t num_equalities = 0,
+            value_type solution_min_norm_regularisation = 0.0,
+            value_type constraint_min_norm_regularisation = 0.0,
+            size_t max_iterations = 0,
+            value_type tolerance = 0.0,
+            bool problem_in_standard_form = false) {
+    H = problem_matrix;
+    chol_HtH.resize(H.cols(), H.cols());
+    t = inequality_constraint_vector;
+    lambda_min_norm = constraint_min_norm_regularisation;
+    tol = tolerance;
+    max_niter = max_iterations ? max_iterations : 10 * problem_matrix.cols();
+    num_eq = num_equalities;
 
     if (H.cols() != inequality_constraint_matrix.cols())
       throw Exception("FIXME: dimensions of problem and constraint matrices do not match (ICLS)");
@@ -208,17 +228,24 @@ public:
   using matrix_type = Eigen::Matrix<value_type, Eigen::Dynamic, Eigen::Dynamic>;
   using vector_type = Eigen::Matrix<value_type, Eigen::Dynamic, 1>;
 
-  Solver(const Problem<value_type> &problem)
-      : P(problem),
-        BtB(P.chol_HtH.rows(), P.chol_HtH.cols()),
-        B(P.B.rows(), P.B.cols()),
-        y_u(BtB.rows()),
-        c(P.B.rows()),
-        c_u(P.B.rows()),
-        lambda(c.size()),
-        lambda_prev(c.size()),
-        l(lambda.size()),
-        active(Eigen::Array<bool, Eigen::Dynamic, 1>::Zero(lambda.size())) {}
+  Solver() : P(nullptr) {}
+
+  Solver(const Problem<value_type> &problem) { init(&problem); }
+
+  void init(const Problem<value_type> *problem) {
+    P = problem;
+    if (P) {
+      BtB.resize(P->chol_HtH.rows(), P->chol_HtH.cols());
+      B.resize(P->B.rows(), P->B.cols());
+      y_u.resize(BtB.rows());
+      c.resize(P->B.rows());
+      c_u.resize(P->B.rows());
+      lambda.resize(c.size());
+      lambda_prev.resize(c.size());
+      l.resize(lambda.size());
+      active.resize(lambda.size());
+    }
+  }
 
   size_t operator()(vector_type &x, const vector_type &b) {
 #ifdef MRTRIX_ICLS_DEBUG
@@ -226,14 +253,14 @@ public:
     std::ofstream n_stream("n.txt");
 #endif
     // compute unconstrained solution:
-    y_u = P.b2d.transpose() * b;
+    y_u = P->b2d.transpose() * b;
     // compute constraint violations for unconstrained solution:
-    c_u = P.B * y_u;
-    if (P.t.size())
-      c_u -= P.t;
+    c_u = P->B * y_u;
+    if (P->t.size())
+      c_u -= P->t;
 
-    const size_t num_eq = P.num_equalities();
-    const size_t num_ineq = P.num_constraints() - num_eq;
+    const size_t num_eq = P->num_equalities();
+    const size_t num_ineq = P->num_constraints() - num_eq;
 
     // set all Lagrangian multipliers to zero:
     lambda.setZero();
@@ -253,7 +280,7 @@ public:
     size_t min_c_index;
     size_t niter = 0;
 
-    while (c.head(num_ineq).minCoeff(&min_c_index) < -P.tol) {
+    while (c.head(num_ineq).minCoeff(&min_c_index) < -P->tol) {
       bool active_set_changed = !active[min_c_index];
       active[min_c_index] = true;
 
@@ -262,7 +289,7 @@ public:
         size_t num_active = 0;
         for (size_t n = 0; n < active.size(); ++n) {
           if (active[n]) {
-            B.row(num_active) = P.B.row(n);
+            B.row(num_active) = P->B.row(n);
             l[num_active] = -c_u[n];
             ++num_active;
           }
@@ -273,7 +300,7 @@ public:
         BtB.resize(num_active, num_active);
         // solve for l in B*B'l = -c_u by Cholesky decomposition:
         BtB.template triangularView<Eigen::Lower>() = B_active * B_active.transpose();
-        BtB.diagonal().array() += P.lambda_min_norm;
+        BtB.diagonal().array() += P->lambda_min_norm;
         BtB.template selfadjointView<Eigen::Lower>().llt().solveInPlace(l_active);
 
         // update lambda values in full vector
@@ -324,24 +351,24 @@ public:
 #endif
 
       ++niter;
-      if (!active_set_changed || niter > P.max_niter)
+      if (!active_set_changed || niter > P->max_niter)
         break;
 
       // compute constraint values at updated solution:
-      c = P.B * x;
-      if (P.t.size())
-        c -= P.t;
+      c = P->B * x;
+      if (P->t.size())
+        c -= P->t;
     }
 
     // project back to unconditioned domain:
-    P.chol_HtH.template triangularView<Eigen::Lower>().transpose().solveInPlace(x);
+    P->chol_HtH.template triangularView<Eigen::Lower>().transpose().solveInPlace(x);
     return niter;
   }
 
   const Problem<value_type> &problem() const { return P; }
 
 protected:
-  const Problem<value_type> &P;
+  const Problem<value_type> *P;
   matrix_type BtB, B;
   vector_type y_u, c, c_u, lambda, lambda_prev, l;
   Eigen::Array<bool, Eigen::Dynamic, 1> active;
