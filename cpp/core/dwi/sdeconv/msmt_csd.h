@@ -190,7 +190,7 @@ public:
         const size_t tissue_n = Math::SH::NforL(tissue_lmax);
         const size_t tissue_nmzero = tissue_lmax / 2 + 1;
         Eigen::VectorXd fconv(tissue_n);
-        Eigen::VectorXd workspace(tissue_n), se_R(tissue_n);
+        Eigen::VectorXd workspace(tissue_nmzero), se_R(tissue_nmzero);
 
         for (size_t vol = 0; vol < grad.rows(); ++vol) {
           const size_t shell_idx = responses_local.size() ? shell_for_vol[vol] : 0;

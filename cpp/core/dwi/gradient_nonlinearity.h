@@ -39,9 +39,9 @@ namespace MR::DWI {
 
         reslicer.index(3) = 0;
         for (int i = 0; i < 3; ++i) {
-          for (int j =0; j < 3; ++j) {
-            ++reslicer.index(3);
+          for (int j = 0; j < 3; ++j) {
             L(i,j) = static_cast<double>(reslicer.value());
+            ++reslicer.index(3);
           }
         }
       }
@@ -50,8 +50,7 @@ namespace MR::DWI {
       void correct_grad(const Eigen::MatrixXd& grad, Eigen::MatrixXd &grad_corr, const Eigen::Matrix3d &L) {
         assert(grad_corr.size() == grad.size());
         // transformation
-        const Eigen::Matrix3d IL = Eigen::Matrix3d::Identity()+L;
-        const Eigen::Matrix3d affine = IL*flipMat();
+        const Eigen::Matrix3d affine = Eigen::Matrix3d::Identity()+L;
 
         for (int N = 0; N < grad.rows(); ++N) {
           const double b = grad(N,3);
@@ -67,15 +66,6 @@ namespace MR::DWI {
             grad_corr.row(N).setZero();
           }
         }
-      }
-
-      // flip matrix for -ve x-axis:
-      static const Eigen::Matrix3d& flipMat() {
-        static const Eigen::Matrix3d mat = (Eigen::Matrix3d() <<
-            1, -1, -1,
-            -1,  1,  1,
-            -1,  1,  1).finished();
-        return mat;
       }
 
     private:
