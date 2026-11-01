@@ -35,8 +35,8 @@ const OptionGroup MSMT_CSD_options =
       + Argument("value").type_float(0.0)
       
     // TODO: add option for gradient nonlinearities
-    + Option("grad_nonlin",
-             "input the gradient nonlinearity image (i.e. gradient deviation field)")
+    + Option("grad_nonlin_corr",
+             "input the 4D gradient nonlinearity image (i.e. gradient deviation field)")
       + Argument("image").type_image_in()
 
     + Option("predicted_signal",

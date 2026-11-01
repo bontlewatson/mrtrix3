@@ -73,7 +73,7 @@ public:
       if (!opt.empty())
         constraint_min_norm_regularisation = opt[0][0];
       // TODO: parse GNL image
-      opt = get_options("grad_nonlin");
+      opt = get_options("grad_nonlin_corr");
       if (!opt.empty()) {
         grad_dev = Image<float>::open(opt[0][0]);
         // check image dimensions are as expected

@@ -104,9 +104,11 @@ def usage(base_parser, subparsers): #pylint: disable=unused-variable
                       default='msmt-csd',
                       help='The model used to estimate the response function'
                             '(default: msmt-csd, other option: stretched_exp)')
-
-
-
+  # option to include GNL corrections in response estimation
+  options.add_argument('-grad_nonlin_corr',
+                      metavar='grad_dev',
+                      type=app.Parser.ImageIn(),
+                      help='Gradient nonlinearity image (i.e. 4D gradient deviation field)')
 def execute(): #pylint: disable=unused-variable
   bzero_threshold = float(CONFIG['BZeroThreshold']) if 'BZeroThreshold' in CONFIG else BZERO_THRESHOLD_DEFAULT
 
@@ -139,11 +141,16 @@ def execute(): #pylint: disable=unused-variable
 
   # get model estimation (if provided)
   model_opt = ''
+  gnl_opt = ''
 
   if app.ARGS.model == 'stretched_exp':
     model_opt = ' -stretched_exp'
     # do not need -shells option for stretched exp
     bvalues_opt = ''
+    gnl_opt=''
+    # implement gnl correction
+    if app.ARGS.grad_nonlin_corr:
+      gnl_opt = '-grad_nonlin_corr '+str(app.ARGS.grad_nonlin_correction)
   app.console(f' Using {app.ARGS.model} model to estimate the response function')
 
   # PREPARATION
@@ -284,7 +291,7 @@ def execute(): #pylint: disable=unused-variable
   app.console(f'   [ CSF: {statrefcsfcount} -> {statvoxcsfcount} ]')
   # Estimate CSF response function
   app.console(' * Estimating response function...')
-  run.command(f'amp2response dwi.mif voxels_csf.mif safe_vecs.mif response_csf.txt {bvalues_opt}{model_opt} -isotropic', show=False)
+  run.command(f'amp2response dwi.mif voxels_csf.mif safe_vecs.mif response_csf.txt {bvalues_opt}{model_opt}{gnl_opt} -isotropic', show=False)
 
   # Get final voxels for GM response function estimation from refined GM.
   app.console('* GM:')
@@ -300,7 +307,7 @@ def execute(): #pylint: disable=unused-variable
   app.console(f'   [ GM: {statrefgmcount} -> {statvoxgmcount} ]')
   # Estimate GM response function
   app.console(' * Estimating response function...')
-  run.command(f'amp2response dwi.mif voxels_gm.mif safe_vecs.mif response_gm.txt {bvalues_opt}{model_opt} -isotropic', show=False)
+  run.command(f'amp2response dwi.mif voxels_gm.mif safe_vecs.mif response_gm.txt {bvalues_opt}{model_opt}{gnl_opt} -isotropic', show=False)
 
   # Get final voxels for single-fibre WM response function estimation from refined WM.
   app.console('* Single-fibre WM:')
@@ -352,7 +359,7 @@ def execute(): #pylint: disable=unused-variable
   app.console(f'   [ WM: {statrefwmcount} -> {statvoxsfwmcount} (single-fibre) ]')
   # Estimate SF WM response function
   app.console(' * Estimating response function...')
-  run.command(f'amp2response dwi.mif voxels_sfwm.mif safe_vecs.mif response_sfwm.txt {bvalues_opt}{sfwm_lmax_option}{model_opt}', show=False)
+  run.command(f'amp2response dwi.mif voxels_sfwm.mif safe_vecs.mif response_sfwm.txt {bvalues_opt}{sfwm_lmax_option}{model_opt}{gnl_opt}', show=False)
 
 
   # OUTPUT AND SUMMARY

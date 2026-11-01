@@ -21,6 +21,7 @@
 #include "command.h"
 #include "dwi/directions/validate.h"
 #include "dwi/gradient.h"
+#include "dwi/gradient_nonlinearity.h"
 #include "dwi/shells.h"
 #include "file/matrix.h"
 #include "header.h"
@@ -76,7 +77,11 @@ void usage() {
       + Argument("path").type_file_in()
 
     + Option ("stretched_exp", "implement stretched exponential model to estimate the response function")
-
+    
+    // option for gradient nonlinearity correction (GNC) scheme
+    + Option("grad_nonlin_corr",
+             "apply a gradient nonlinearity correction for SE response estimation")
+      + Argument("grad_dev").type_image_in()
     + DWI::ShellsOption
 
     + Option ("lmax", "specify the maximum harmonic degree of the response function to estimate"
@@ -121,9 +126,38 @@ std::vector<size_t> all_volumes(const size_t num) {
   return result;
 }
 
+// generate the azimuthal directions matrix: 
+Eigen::MatrixXd get_rotated_dirs_azin(const Eigen::MatrixXd &dirs, Image<float> &dir_image) {
+  Eigen::Vector3d fibre_dir;
+  for (dir_image.index(3) = 0; dir_image.index(3) != 3; ++dir_image.index(3))
+    fibre_dir[dir_image.index(3)] = dir_image.value();
+  fibre_dir.normalize();
+
+  auto R = gen_rotation_matrix(fibre_dir);
+  Eigen::Matrix<default_type, Eigen::Dynamic, 3> rotated_dirs_cartesian(dirs.rows(), 3);
+  rotated_dirs_cartesian.transpose() = R * dirs.transpose();
+
+  Eigen::MatrixXd rotated_dirs_azin = Math::Sphere::cartesian2spherical(rotated_dirs_cartesian);
+
+  for (ssize_t i = 0; i != rotated_dirs_azin.rows(); ++i) {
+    if (rotated_dirs_azin(i, 1) > Math::pi_2) {
+      if (rotated_dirs_azin(i, 0) > Math::pi)
+        rotated_dirs_azin(i, 0) -= Math::pi;
+      else
+        rotated_dirs_azin(i, 0) += Math::pi;
+      rotated_dirs_azin(i, 1) = Math::pi - rotated_dirs_azin(i, 1);
+    }
+  }
+
+  return rotated_dirs_azin;
+}
+
 // signal approximation accounting for Rician Noise
 inline double add_noise_bias(double clean, double noiseStd) {
-  double rp = 2.25;
+  constexpr double rp = 2.25;
+  // for the case of no noise estimation made
+  if (noiseStd <= 0.0)
+    return std::abs(clean); 
   // ensure non=zero signals
   double t = std::pow(std::abs(clean) / noiseStd, rp);
   return noiseStd * std::pow(t + 1.65, 1.0 / rp);
@@ -167,30 +201,7 @@ public:
     if (mask.value()) {
       ++count;
 
-      // Grab the fibre direction
-      Eigen::Vector3d fibre_dir;
-      for (dir_image.index(3) = 0; dir_image.index(3) != 3; ++dir_image.index(3))
-        fibre_dir[dir_image.index(3)] = dir_image.value();
-      fibre_dir.normalize();
-
-      // Rotate the directions into a new reference frame,
-      //   where the Z axis is defined by the specified direction
-      auto R = gen_rotation_matrix(fibre_dir);
-      rotated_dirs_cartesian.transpose() = R * S.dirs.transpose();
-
-      // Convert directions from Euclidean space to azimuth/inclination pairs
-      Eigen::MatrixXd rotated_dirs_azin = Math::Sphere::cartesian2spherical(rotated_dirs_cartesian);
-
-      // Constrain inclinations to between 0 and pi/2
-      for (ssize_t i = 0; i != rotated_dirs_azin.rows(); ++i) {
-        if (rotated_dirs_azin(i, 1) > Math::pi_2) {
-          if (rotated_dirs_azin(i, 0) > Math::pi)
-            rotated_dirs_azin(i, 0) -= Math::pi;
-          else
-            rotated_dirs_azin(i, 0) += Math::pi;
-          rotated_dirs_azin(i, 1) = Math::pi - rotated_dirs_azin(i, 1);
-        }
-      }
+      auto rotated_dirs_azin = get_rotated_dirs_azin(S.dirs, dir_image);
 
       // Generate the ZSH -> amplitude transform
       transform = Math::ZSH::init_amp_transform<default_type>(rotated_dirs_azin.col(1), S.lmax);
@@ -223,15 +234,22 @@ class SE_Accumulator {
 public:
   class SE_Shared {
   public:
-    SE_Shared(uint32_t max_lmax, const Eigen::MatrixXd &dw_scheme)
-        : lmax(max_lmax), dirs(dw_scheme.leftCols(3)), pervolume_bvalues(dw_scheme.col(3)), count(0) {}
+    SE_Shared(uint32_t max_lmax, const Eigen::MatrixXd &dwi_scheme, const Header &dwi_header, const Image<float> grad_dev)
+        : lmax(max_lmax), dwi_header(dwi_header), 
+        dirs(dwi_scheme.leftCols(3)), 
+        pervolume_bvalues(dwi_scheme.col(3)), grad(dwi_scheme), 
+        grad_dev(grad_dev), count(0) 
+        {}
 
     const int lmax;
+    const Header dwi_header;
     const Eigen::MatrixXd dirs;
+    const Eigen::MatrixXd grad; 
     const Eigen::VectorXd pervolume_bvalues; // from the gradient table
     size_t count;
     // LM algo needs (amp, bval, inclination) for all voxels in mask
     Eigen::VectorXd amplitudes, bvalues, cos_inclination, sin_inclination;
+    const Image<float> grad_dev;
   };
 
   SE_Accumulator(SE_Shared &shared) : S(shared), count(0), rotated_dirs_cartesian(S.dirs.rows(), 3) {}
@@ -249,38 +267,42 @@ public:
     if (mask.value()) {
       ++count;
 
-      // Grab the fibre direction
-      Eigen::Vector3d fibre_dir;
-      for (dir_image.index(3) = 0; dir_image.index(3) != 3; ++dir_image.index(3))
-        fibre_dir[dir_image.index(3)] = dir_image.value();
-      fibre_dir.normalize();
+      // determine if gradient nonlinearity correction (GNC) is implmented or not
+      Eigen::Vector3i voxelPosition(amp_image.index(0), amp_image.index(1), amp_image.index(2));
+      corrected_grad.conservativeResize(S.grad.rows(), S.grad.cols());
+      if (S.grad_dev.valid()) {
+        // use corrected gradient table (voxel-dependent)
+        DWI::GradientNonLinearityCorrection gnc(S.grad_dev, S.dwi_header);
+        // local (voxel) gradient coil tensor, L: 
+        Eigen::Matrix3d L_local;
+        gnc.compute_L(L_local, voxelPosition);
+        gnc.correct_grad(S.grad, corrected_grad, L_local);
+      } 
 
-      // Rotate the directions into a new reference frame,
-      //   where the Z axis is defined by the specified direction
-      auto R = gen_rotation_matrix(fibre_dir);
-      rotated_dirs_cartesian.transpose() = R * S.dirs.transpose();
-
-      // Convert directions from Euclidean space to azimuth/inclination pairs
-      Eigen::MatrixXd rotated_dirs_azin = Math::Sphere::cartesian2spherical(rotated_dirs_cartesian);
-
-      // Constrain inclinations to between 0 and pi/2
-      for (ssize_t i = 0; i != rotated_dirs_azin.rows(); ++i) {
-        if (rotated_dirs_azin(i, 1) > Math::pi_2) {
-          if (rotated_dirs_azin(i, 0) > Math::pi)
-            rotated_dirs_azin(i, 0) -= Math::pi;
-          else
-            rotated_dirs_azin(i, 0) += Math::pi;
-          rotated_dirs_azin(i, 1) = Math::pi - rotated_dirs_azin(i, 1);
-        }
+      // use the appropriate gradient directions: 
+      if (S.grad_dev.valid()){
+        // GNC case: 
+        rotated_dirs_azin = get_rotated_dirs_azin(corrected_grad.leftCols(3), dir_image);
+      } else {
+        // use directions from the gradient table: 
+        rotated_dirs_azin = get_rotated_dirs_azin(S.dirs, dir_image);
       }
+
+      
       for (size_t i = 0; i != S.dirs.rows(); ++i) {
         amp_image.index(3) = i;
         amplitudes.push_back(amp_image.value());
-        bvals.push_back(S.pervolume_bvalues[i] / 1000.0);
 
         double inclination = rotated_dirs_azin(i, 1);
         sin_inclination.push_back(std::sin(inclination));
         cos_inclination.push_back(std::cos(inclination));
+
+        // use the appropriate b-values:
+        if (S.grad_dev.valid()){
+          bvals.push_back(corrected_grad(i,3) / 1000.0);
+        } else{
+          bvals.push_back(S.pervolume_bvalues[i] / 1000.0);
+        }
       }
     }
   }
@@ -290,6 +312,8 @@ protected:
   size_t count;
   std::vector<double> amplitudes, bvals, cos_inclination, sin_inclination;
   Eigen::Matrix<default_type, Eigen::Dynamic, 3> rotated_dirs_cartesian;
+  Eigen::MatrixXd corrected_grad;
+  Eigen::MatrixXd rotated_dirs_azin;
 
   void append(Eigen::VectorXd &shared, const std::vector<double> &accumulate) {
     const Eigen::Index s_length = shared.size();
@@ -319,8 +343,11 @@ struct LMFunctor {
   // number of data points
   int values() const { return signal.size(); }
 
-  inline double deriv_bias(double estimate) const {
-    double rp = 2.25;
+  // derivative for the noise bias correction
+  inline double deriv_noise(double estimate) const {
+    if (noiseStd <= 0)
+      return 1.0; 
+    constexpr double rp = 2.25;
     double tt = std::max(std::abs(estimate) / noiseStd, 1e-10);
     // d(biased_estimate)/d(estimate)
     double factor = std::pow(tt, rp - 1.0) * std::pow(tt + 1.65, 1.0 / rp - 1.0);
@@ -354,25 +381,25 @@ struct LMFunctor {
 
   // compute jacobian of the residuals
   int df(const Eigen::VectorXd &x, Eigen::MatrixXd &fjac) const {
-    double estimate, d_bias;
+    double estimate, d_noise;
 
     for (size_t i = 0; i < signal.size(); ++i) {
       const double bb = bval[i];
       const double alpha = x[n - 1];
 
       if (n == 3) {
-        // j = [ df/ d(S0), df/d(D_app), df/d(alpha)], scale jacobian by der of the bias
+        // j = [ df/ d(S0), df/d(D_app), df/d(alpha)], scale jacobian by der of the noise estimation
         const double bD = bb * x[1];
         const double exponent = std::exp(-std::pow(bD, alpha));
         estimate = x[0] * std::exp(-std::pow(bD, alpha));
-        d_bias = deriv_bias(estimate);
+        d_noise = deriv_noise(estimate);
 
-        fjac(i, 0) = -d_bias * exponent;
         if (bb > 0.0) {
-          fjac(i, 1) = d_bias * alpha * bb * x[0] * exponent * std::pow(bD, alpha - 1.0);
-          fjac(i, 2) = d_bias * x[0] * exponent * std::pow(bD, alpha) * std::log(bD);
+          fjac(i, 0) = - d_noise * exponent;
+          fjac(i, 1) = d_noise * alpha * bb * x[0] * exponent * std::pow(bD, alpha - 1.0);
+          fjac(i, 2) = d_noise * x[0] * exponent * std::pow(bD, alpha) * std::log(bD);
         } else
-          fjac(i, 1) = fjac(i, 2) = 0.0;
+        fjac(i, 0) = fjac(i, 1) = fjac(i, 2) = 0.0;
 
       } else {
         // j = [ df/ d(S0), df/d(D_ax), df/d(D_rad), df/d(alpha)], scale jacobian by der of the bias
@@ -384,16 +411,16 @@ struct LMFunctor {
           const double exponent = std::exp(-std::pow(bD, alpha));
 
           estimate = x[0] * exponent;
-          d_bias = deriv_bias(estimate);
+          d_noise = deriv_noise(estimate);
 
-          fjac(i, 0) = -d_bias * exponent;
-          fjac(i, 1) = d_bias * alpha * bb * x[0] * exponent * (cel * cel) * std::pow(bD, alpha - 1.0);
-          fjac(i, 2) = d_bias * alpha * bb * x[0] * exponent * (sel * sel) * std::pow(bD, alpha - 1.0);
-          fjac(i, 3) = d_bias * x[0] * exponent * std::pow(bD, alpha) * std::log(bD);
+          fjac(i, 0) = -d_noise * exponent;
+          fjac(i, 1) = d_noise * alpha * bb * x[0] * exponent * (cel * cel) * std::pow(bD, alpha - 1.0);
+          fjac(i, 2) = d_noise * alpha * bb * x[0] * exponent * (sel * sel) * std::pow(bD, alpha - 1.0);
+          fjac(i, 3) = d_noise * x[0] * exponent * std::pow(bD, alpha) * std::log(bD);
         } else {
-          d_bias = deriv_bias(x[0]);
-          fjac(i, 0) = -d_bias;
-          fjac(i, 1) = fjac(i, 2) = fjac(i, 3) = 0.0;
+          //d_noise = deriv_noise(x[0]);
+          //fjac(i, 0) = -d_noise;
+          fjac(i, 0)=fjac(i, 1) = fjac(i, 2) = fjac(i, 3) = 0.0;
         }
       }
     }
@@ -520,8 +547,18 @@ void run() {
 
   const bool use_ols = !get_options("noconstraint").empty();
 
-  // TODO: parse the se model option
+  // parse the se model option
   const bool use_se = !get_options("stretched_exp").empty();
+
+  // gradient nonlinearity correction (GNC) scheme 
+  Image<float> grad_dev;
+  opt = get_options("grad_nonlin_corr");
+      if (!opt.empty()) {
+        grad_dev = Image<float>::open(opt[0][0]);
+        // check image dimensions are as expected
+        if (grad_dev.ndim() != 4 || grad_dev.size(3) != 9)
+          throw Exception("The input gradient deviation image does not have expected dimensions. Expect a 4D image with 9 volumes.");
+      }
 
   // response estimation for shell structure:
   if (!use_se) {
@@ -614,7 +651,7 @@ void run() {
 
     DEBUG("gathering signals in selected voxels...");
 
-    SE_Accumulator::SE_Shared shared(max_lmax, DWI::get_DW_scheme(header));
+    SE_Accumulator::SE_Shared shared(max_lmax, DWI::get_DW_scheme(header), header, grad_dev);
 
     ThreadedLoop(image, 0, 3).run(SE_Accumulator(shared), image, dir_image, mask);
 
@@ -629,7 +666,7 @@ void run() {
     double noiseStd;
 
     for (size_t i = 0; i < shared.bvalues.size(); ++i) {
-      if (shared.bvalues[i] == bmax && std::asin(shared.sin_inclination[i]) < 0.2)
+      if (shared.bvalues[i] > 0.95*bmax && std::asin(shared.sin_inclination[i]) < 0.2)
         indx.push_back(i);
     }
     double mean_maxb_amp = 0.0;
@@ -638,6 +675,8 @@ void run() {
     mean_maxb_amp /= indx.size();
 
     noiseStd = mean_maxb_amp / add_noise_bias(0.0, 1.0);
+    DEBUG("estimated noise std: " + str(noiseStd));
+
 
     DEBUG("fitting parameters of stretched exponential model to signals...");
 
