@@ -144,13 +144,13 @@ def execute(): #pylint: disable=unused-variable
   gnl_opt = ''
 
   if app.ARGS.model == 'stretched_exp':
-    model_opt = ' -stretched_exp'
+    model_opt = '-stretched_exp '
     # do not need -shells option for stretched exp
     bvalues_opt = ''
     gnl_opt=''
     # implement gnl correction
     if app.ARGS.grad_nonlin_corr:
-      gnl_opt = '-grad_nonlin_corr '+str(app.ARGS.grad_nonlin_correction)
+      gnl_opt = '-grad_nonlin_corr '+str(app.ARGS.grad_nonlin_corr)
   app.console(f' Using {app.ARGS.model} model to estimate the response function')
 
   # PREPARATION

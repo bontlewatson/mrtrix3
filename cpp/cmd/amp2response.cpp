@@ -419,8 +419,8 @@ struct LMFunctor {
           fjac(i, 3) = d_noise * x[0] * exponent * std::pow(bD, alpha) * std::log(bD);
         } else {
           //d_noise = deriv_noise(x[0]);
-          //fjac(i, 0) = -d_noise;
-          fjac(i, 0)=fjac(i, 1) = fjac(i, 2) = fjac(i, 3) = 0.0;
+          //fjac(i, 0) = d_noise;
+          fjac(i, 0) = fjac(i, 1) = fjac(i, 2) = fjac(i, 3) = 0.0;
         }
       }
     }
@@ -675,8 +675,8 @@ void run() {
     mean_maxb_amp /= indx.size();
 
     noiseStd = mean_maxb_amp / add_noise_bias(0.0, 1.0);
+    noiseStd = 0.0;
     DEBUG("estimated noise std: " + str(noiseStd));
-
 
     DEBUG("fitting parameters of stretched exponential model to signals...");
 
@@ -699,11 +699,11 @@ void run() {
 
     if (nparam == 3) {
       x0[1] = 2.0;
-      x0[2] = 0.8;
+      x0[2] = 0.7;
     } else {
       x0[1] = 3.0;
       x0[2] = 1.0;
-      x0[3] = 0.2;
+      x0[3] = 0.3;
     }
 
     // optimisation
@@ -748,7 +748,7 @@ void run() {
 
     if (nparam == 3)
       CONSOLE("SE model paramters [s0, Dapp, alpha]: [" + str(responses.transpose().cast<float>()) + "]");
-    else {
+    else if (nparam == 4) {
       CONSOLE("SE model paramaters [s0, Dax, Drad, alpha]: [" + str(responses.transpose().cast<float>()) + "]");
     }
 
