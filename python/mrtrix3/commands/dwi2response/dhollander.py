@@ -109,7 +109,7 @@ def usage(base_parser, subparsers): #pylint: disable=unused-variable
                       metavar='grad_dev',
                       type=app.Parser.ImageIn(),
                       help='Provide 4D gradient deviation field image for gradient nonlinearity correction')
-  options.add_argument('-rbc',
+  options.add_argument('-noise',
                       metavar='noise_map',
                       type=app.Parser.ImageIn(),
                       help='Provide noise map for Rician Bias correction')
@@ -156,8 +156,8 @@ def execute(): #pylint: disable=unused-variable
     # implement gnl correction
     if app.ARGS.grad_nonlin_corr:
       gnl_opt = ' -grad_nonlin_corr '+str(app.ARGS.grad_nonlin_corr)
-    if app.ARGS.rbc:
-      rbc_opt = ' -rbc '+str(app.ARGS.rbc)
+    if app.ARGS.noise:
+      rbc_opt = ' -noise '+str(app.ARGS.noise)
   app.console(f' Using {app.ARGS.model} model to estimate the response function')
 
   # PREPARATION

@@ -18,6 +18,7 @@
 #include <Eigen/Dense>
 #include <filesystem>
 
+#include "adapter/reslice.h"
 #include "command.h"
 #include "dwi/directions/validate.h"
 #include "dwi/gradient.h"
@@ -35,7 +36,6 @@
 #include "types.h"
 #include <algorithm>
 #include <unsupported/Eigen/NonLinearOptimization>
-#include "adapter/reslice.h"
 
 using namespace MR;
 using namespace App;
@@ -81,10 +81,10 @@ void usage() {
     
     // option for gradient nonlinearity correction (GNC) scheme
     + Option("grad_nonlin_corr",
-             "apply a gradient nonlinearity correction for SE response estimation")
+             "apply a gradient nonlinearity correction for stretched exponentialresponse estimation")
       + Argument("grad_dev").type_image_in()
     
-    + Option("rbc", "apply a rician bias correction for spatially varying noise")
+    + Option("noise", "apply a rician bias correction for response estimation using noise map provided")
       + Argument ("noise_map").type_image_in()
 
     + DWI::ShellsOption
@@ -259,8 +259,8 @@ public:
     const Eigen::MatrixXd grad;
     const Eigen::VectorXd pervolume_bvalues; // from the gradient table
     size_t count;
-    // LM algo needs (amp, bval, inclination, noise_std) for all voxels in mask
-    Eigen::VectorXd amplitudes, bvalues, cos_inclination, sin_inclination, noise_std;
+    // variables supplied to LM algo 
+    Eigen::VectorXd amplitudes, bvalues, cos_inclination, sin_inclination, pervoxel_noise;
     const Image<float> grad_dev;
     const Image<float> noise_map;
   };
@@ -273,7 +273,7 @@ public:
     append(S.sin_inclination, sin_inclination);
     append(S.cos_inclination, cos_inclination);
     append(S.bvalues, bvals);
-    append(S.noise_std, noise_std);
+    append(S.pervoxel_noise, pervoxel_noise);
     S.count += count;
   }
 
@@ -303,17 +303,18 @@ public:
         rotated_dirs_azin = get_rotated_dirs_azin(S.dirs, dir_image);
       }
 
-      Image<float> noise_map_copy = S.noise_map; 
+      Image<float> noise_map_copy = S.noise_map;
       // if no rbc is performed, noise_std = 0
-      double noise = 0.0; 
+      double noise = 0.0;
       // create vector of spatially varying/ voxel-dependent noise level (noise_std)
-      if (S.noise_map.valid()){
-        noise_map_copy.index(0) = voxelPosition[0];
-        noise_map_copy.index(1) = voxelPosition[1];
-        noise_map_copy.index(2) = voxelPosition[2];
+      if (S.noise_map.valid()) {
+        assign_pos_of(amp_image, 0, 3).to(noise_map_copy);
         const double noise_estimate = static_cast<double>(noise_map_copy.value());
+        // estimate the noise standard deviation from noise map
         noise = noise_estimate / add_noise_bias(0.0, 1.0);
       }
+      // vector of per voxel noise levels (noise estimate is shared across all volumes for a given voxel position)
+      pervoxel_noise.push_back(noise);
 
       for (size_t i = 0; i != S.dirs.rows(); ++i) {
         amp_image.index(3) = i;
@@ -329,7 +330,6 @@ public:
         } else {
           bvals.push_back(S.pervolume_bvalues[i] / 1000.0);
         }
-        noise_std.push_back(noise);
       }
     }
   }
@@ -337,7 +337,7 @@ public:
 protected:
   SE_Shared &S;
   size_t count;
-  std::vector<double> amplitudes, bvals, cos_inclination, sin_inclination, noise_std;
+  std::vector<double> amplitudes, bvals, cos_inclination, sin_inclination, pervoxel_noise;
   Eigen::Matrix<default_type, Eigen::Dynamic, 3> rotated_dirs_cartesian;
   Eigen::MatrixXd corrected_grad;
   Eigen::MatrixXd rotated_dirs_azin;
@@ -365,41 +365,51 @@ struct LMFunctor {
             const Eigen::VectorXd &cos_el,
             const Eigen::VectorXd &noise_std,
             bool is_iso = false)
+      // transform parameter space to base e (ensures strictly positive definite parameters)
       : signal(s), bval(b), sin_inclination(sin_el), cos_inclination(cos_el), noise_std(noise_std), n(is_iso ? 3 : 4) {}
 
   // number of data points
   int values() const { return signal.size(); }
 
-  // derivative for the noise bias correction
+  // deriative for the rician bias correction 
   inline double deriv_noise(double estimate, double noise_std) const {
     if (noise_std <= 0)
       return 1.0;
     constexpr double rp = 2.25;
-    double tt = std::max(std::abs(estimate) / noise_std, 1e-10);
+    double f_noise = std::abs(estimate) / noise_std;
     // d(biased_estimate)/d(estimate)
-    double factor = std::pow(tt, rp - 1.0) * std::pow(tt + 1.65, 1.0 / rp - 1.0);
-    return factor;
+    double dfbiased_df = std::pow(f_noise, rp - 1.0) * std::pow(1.65 + std::pow(f_noise, rp), 1.0 / rp - 1.0);
+    return dfbiased_df;
   }
 
   // compute residuals
   int operator()(const Eigen::VectorXd &x, Eigen::VectorXd &fvec) const {
     double estimate;
-    // double check an alpha constraint such that alpha lies in [0,1]
-    const double alpha = x[n - 1];
+    if (!x.allFinite())
+      VAR(x.transpose());
+
+    // transform the parameters, use exponential base for the fit:
+    double s0 = std::exp(x[0]);
+
+    // sigmoid function for alpha (constrained to [0,1])
+    double alpha = 1.0/(1.0 + std::exp(-x[n-1]));
 
     for (size_t i = 0; i < signal.size(); ++i) {
       if (n == 3) {
-        // x = [s0, Dapp, alpha]
-        estimate = x[0] * std::exp(-std::pow(bval[i] * x[1], alpha));
+        double D = std::exp(x[1]);
+        // x = [exp(s0), exp(Dapp), exp(alpha)]
+        estimate = s0 * std::exp(-std::pow(bval[i] * D, alpha));
       } else {
-        // x = [s0, D_ax, D_rad, alpha]
+        // // x = [exp(s0), exp(Dax), exp(Drad), exp(alpha)]
         if (bval[i] > 0.0) {
           const double cel = cos_inclination[i];
           const double sel = sin_inclination[i];
-          const double diffusivity = x[1] * (cel * cel) + x[2] * (sel * sel);
-          estimate = x[0] * std::exp(-std::pow(bval[i] * diffusivity, alpha));
+          double Dax = std::exp(x[1]);
+          double Drad = std::exp(x[2]);
+          const double diffusivity = Dax * (cel * cel) + Drad * (sel * sel);
+          estimate = s0 * std::exp(-std::pow(bval[i] * diffusivity, alpha));
         } else
-          estimate = x[0];
+          estimate = s0;
       }
       fvec[i] = signal[i] - add_noise_bias(estimate, noise_std[i]);
     }
@@ -408,26 +418,33 @@ struct LMFunctor {
 
   // compute jacobian of the residuals
   int df(const Eigen::VectorXd &x, Eigen::MatrixXd &fjac) const {
-    double estimate, d_noise;
+    // logarithmic parameterisation:
+    double s0 = std::exp(x[0]);
+    //double alpha = std::exp(x[n - 1]);
+    double alpha = 1.0/(1.0 + std::exp(-x[n-1]));
 
     for (size_t i = 0; i < signal.size(); ++i) {
       const double b = bval[i];
-      const double alpha = x[n - 1];
       const double noise = noise_std[i];
 
+      // Jtransformed = Joriginal * d(exp(s0),exp(Dax),exp(Drad),exp(alpha)) / d(s0,Dax,Drax,alpha)
       if (n == 3) {
         // j = [ df/ d(S0), df/d(D_app), df/d(alpha)], scale jacobian by der of the noise estimation
-        const double bD = b * x[1];
+        double D = std::exp(x[1]);
+
+        const double bD = b * D;
         const double exponent = std::exp(-std::pow(bD, alpha));
-        estimate = x[0] * std::exp(-std::pow(bD, alpha));
-        d_noise = deriv_noise(estimate,noise);
+        const double estimate = s0 * exponent;
+        // d(biased_estimate)/d(param) = d(biased_estimate)/d(estimate) * d(estimate)/d(param)
 
         if (b > 0.0) {
-          fjac(i, 0) = -d_noise * exponent;
-          fjac(i, 1) = d_noise * alpha * b * x[0] * exponent * std::pow(bD, alpha - 1.0);
-          fjac(i, 2) = d_noise * x[0] * exponent * std::pow(bD, alpha) * std::log(bD);
+          const double dfbiased_df = deriv_noise(estimate, noise);
+          fjac(i, 0) = -dfbiased_df * estimate;
+          fjac(i, 1) = dfbiased_df * estimate * alpha * std::pow(bD, alpha);
+          fjac(i, 2) = dfbiased_df * estimate * std::pow(bD, alpha) * std::log(bD) * alpha*(1.0 - alpha);
         } else {
-          fjac(i, 0) = -d_noise;
+          const double dfbiased_df = deriv_noise(s0, noise);
+          fjac(i, 0) = -dfbiased_df * s0;
           fjac(i, 1) = fjac(i, 2) = 0.0;
         }
 
@@ -436,23 +453,31 @@ struct LMFunctor {
         if (b > 0.0) {
           const double cel = cos_inclination[i];
           const double sel = sin_inclination[i];
-          const double diffusivity = x[1] * (cel * cel) + x[2] * (sel * sel);
+          double Dax = std::exp(x[1]);
+          double Drad = std::exp(x[2]);
+          const double diffusivity = Dax * (cel * cel) + Drad * (sel * sel);
           const double bD = b * diffusivity;
-          const double exponent = std::exp(-std::pow(bD, alpha));
+ 
+          // d(biased_estimate)/d(param) = d(biased_estimate)/d(estimate) * d(estimate)/d(param)
+          const double estimate = s0 * std::exp(-std::pow(bD, alpha));
+          const double dfbiased_df = deriv_noise(estimate, noise);
 
-          estimate = x[0] * exponent;
-          d_noise = deriv_noise(estimate,noise);
-
-          fjac(i, 0) = -d_noise * exponent;
-          fjac(i, 1) = d_noise * alpha * b * x[0] * exponent * (cel * cel) * std::pow(bD, alpha - 1.0);
-          fjac(i, 2) = d_noise * alpha * b * x[0] * exponent * (sel * sel) * std::pow(bD, alpha - 1.0);
-          fjac(i, 3) = d_noise * x[0] * exponent * std::pow(bD, alpha) * std::log(bD);
+          fjac(i, 0) = -dfbiased_df * estimate;
+          fjac(i, 1) = dfbiased_df * alpha * estimate * std::pow(b, alpha) * std::pow(diffusivity, alpha - 1.0) *
+                       (cel * cel) * Dax;
+          fjac(i, 2) = dfbiased_df * alpha * estimate * std::pow(b, alpha) * std::pow(diffusivity, alpha - 1.0) *
+                       (sel * sel) * Drad;
+          fjac(i, 3) = dfbiased_df * estimate * std::pow(bD, alpha) * std::log(bD) * alpha*(1.0 - alpha);
         } else {
-          d_noise = deriv_noise(x[0],noise);
-          fjac(i, 0) = -d_noise;
+          const double dfbiased_df = deriv_noise(s0, noise);
+          fjac(i, 0) = -dfbiased_df * s0;
           fjac(i, 1) = fjac(i, 2) = fjac(i, 3) = 0.0;
         }
       }
+    }
+
+    if (!fjac.allFinite()){
+      TRACE;
     }
     return 0;
   }
@@ -591,220 +616,220 @@ void run() {
 
   // rician bias correction:
   Image<float> noise_map;
-  opt = get_options("rbc");
-  if (!opt.empty()){
-    Image<float> cmd_noise_map = Image<float>::open(opt[0][0]);
-    // check image dimensions: 
-    if (cmd_noise_map.ndim() != 3)
-      throw Exception("The input noise map image does not have expected dimensions. Expect a 3D image.");
-    
-    // regrid to ensure noise map has the same dimensions as DW data: 
-    Adapter::Reslice<Interp::Linear, Image<float> > reslicer (cmd_noise_map, header);
+  opt = get_options("noise");
+  if (!opt.empty()) {
+    Image<float> cmdl_noise_map = Image<float>::open(opt[0][0]);
+    if (cmdl_noise_map.ndim() < 3)
+      throw Exception("The input noise map image must have at least 3 dimensions.");
+
+    Header noise_header(header);
+    noise_header.ndim() = cmdl_noise_map.ndim();
+    noise_map = Image<float>::scratch(noise_header);
+
+    // regrid to ensure noise map has the same dimensions as DW data:
+    Adapter::Reslice<Interp::Linear, Image<float>> reslicer(cmdl_noise_map, header);
     copy(reslicer, noise_map);
   }
 
-    // response estimation for shell structure:
-    if (!use_se) {
-      // *****************************************************************************
-      //                            Standard MSMT Implementation
-      // *****************************************************************************
+  // response estimation for shell structure:
+  if (!use_se) {
+    // *****************************************************************************
+    //                            Standard MSMT Implementation
+    // *****************************************************************************
 
-      CONSOLE(std::string("estimating response function using ") + (use_ols ? "ordinary" : "constrained") +
-              " least-squares from " + str(num_voxels) + " voxels");
+    CONSOLE(std::string("estimating response function using ") + (use_ols ? "ordinary" : "constrained") +
+            " least-squares from " + str(num_voxels) + " voxels");
 
-      Eigen::MatrixXd responses(dirs_azin.size(), Math::ZSH::NforL(max_lmax));
+    Eigen::MatrixXd responses(dirs_azin.size(), Math::ZSH::NforL(max_lmax));
 
-      for (size_t shell_index = 0; shell_index != dirs_azin.size(); ++shell_index) {
+    for (size_t shell_index = 0; shell_index != dirs_azin.size(); ++shell_index) {
 
-        // check the ZSH -> amplitude transform upfront:
-        {
-          auto transform =
-              Math::ZSH::init_amp_transform<default_type>(dirs_azin[shell_index].col(1), lmax[shell_index]);
-          if (!transform.allFinite()) {
-            Exception e("Unable to construct A2SH transformation for shell b=" +
-                        str(static_cast<ssize_t>(std::round((*shells)[shell_index].get_mean()))) + ";");
-            e.push_back("  lmax (" + str(lmax[shell_index]) + ") may be too large for this shell");
-            if (!shell_index && (*shells)[0].is_bzero())
-              e.push_back("  (this appears to be a b=0 shell, and therefore lmax should be set to 0 for this shell)");
-            throw e;
-          }
-        }
-
-        auto dirs_cartesian = Math::Sphere::spherical2cartesian(dirs_azin[shell_index]);
-
-        Accumulator::Shared shared(lmax[shell_index], volumes[shell_index], dirs_cartesian);
-        ThreadedLoop(image, 0, 3).run(Accumulator(shared), image, dir_image, mask);
-
-        Eigen::VectorXd rf;
-        // Is this anything other than an isotropic response?
-
-        if (!lmax[shell_index] || use_ols) {
-
-          rf = shared.M.llt().solve(shared.b);
-
-        } else {
-          // Generate the constraint matrix
-          // We are going to both constrain the amplitudes to be non-negative, and constrain the derivatives to be
-          // non-negative
-          const size_t num_angles_constraint = 90;
-          Eigen::VectorXd els(num_angles_constraint + 1);
-          for (size_t i = 0; i <= num_angles_constraint; ++i)
-            els[i] = static_cast<default_type>(i) * Math::pi / 180.0;
-          auto amp_transform = Math::ZSH::init_amp_transform<default_type>(els, lmax[shell_index]);
-          auto deriv_transform = Math::ZSH::init_deriv_transform<default_type>(els, lmax[shell_index]);
-
-          Eigen::MatrixXd constraints(amp_transform.rows() + deriv_transform.rows(), amp_transform.cols());
-          constraints.block(0, 0, amp_transform.rows(), amp_transform.cols()) = amp_transform;
-          constraints.block(amp_transform.rows(), 0, deriv_transform.rows(), deriv_transform.cols()) = deriv_transform;
-
-          // Initialise the problem solver
-          auto problem = Math::ICLS::Problem<default_type>(
-              shared.M, constraints, Eigen::VectorXd(), 0, 1e-10, 1e-10, 0, 0.0, true);
-          auto solver = Math::ICLS::Solver<default_type>(problem);
-
-          // Estimate the solution
-          const size_t niter = solver(rf, shared.b);
-          INFO("constrained least-squares solver completed in " + str(niter) + " iterations");
-        }
-
-        CONSOLE("  b=" + str((*shells)[shell_index].get_mean(), 4) + ": [" + str(rf.transpose().cast<float>()) + "]");
-
-        rf.conservativeResizeLike(Eigen::VectorXd::Zero(Math::ZSH::NforL(max_lmax)));
-        responses.row(shell_index) = rf;
-      }
-
-      KeyValues keyvals;
-      if (shells) {
-        std::string line = str<int>((*shells)[0].get_mean());
-        for (size_t i = 1; i != (*shells).count(); ++i)
-          line += "," + str<int>((*shells)[i].get_mean());
-        keyvals["Shells"] = line;
-      }
-      File::Matrix::save_matrix(responses, response_output_path, keyvals);
-
-    } else if (use_se) {
-      // *****************************************************************************
-      //                               SE implementation
-      // *****************************************************************************
-
-      CONSOLE(std::string("estimating response function using the stretched exponential from ") + //
-              str(num_voxels) + " voxels");                                                       //
-
-      // response estimation for no shell structure (se):
-      int nparam = (max_lmax == 0) ? 3 : 4;
-
-      DEBUG("gathering signals in selected voxels...");
-
-      SE_Accumulator::SE_Shared shared(max_lmax, DWI::get_DW_scheme(header), header, grad_dev, noise_map);
-
-      ThreadedLoop(image, 0, 3).run(SE_Accumulator(shared), image, dir_image, mask);
-
-      assert(shared.amplitudes.size() == shared.bvalues.size() &&
-             shared.amplitudes.size() == shared.sin_inclination.size() && 
-             shared.amplitudes.size() == shared.noise_std.size());
-
-      Eigen::VectorXd responses(nparam);
-
-      /*
-      // noise estimation:
-      std::vector<size_t> indx;
-      double bmax = shared.bvalues.maxCoeff();
-      double noiseStd;
-
-      for (size_t i = 0; i < shared.bvalues.size(); ++i) {
-        if (shared.bvalues[i] > 0.95 * bmax && std::asin(shared.sin_inclination[i]) < 0.2)
-          indx.push_back(i);
-      }
-      double mean_maxb_amp = 0.0;
-      for (int i = 0; i < indx.size(); ++i)
-        mean_maxb_amp += shared.amplitudes[indx[i]];
-      mean_maxb_amp /= indx.size();
-
-      noiseStd = mean_maxb_amp / add_noise_bias(0.0, 1.0);
-      noiseStd = 0.0;
-      DEBUG("estimated noise std: " + str(noiseStd)); */
-
-      DEBUG("fitting parameters of stretched exponential model to signals...");
-
-      // levenberg-marquart solver:
-      LMFunctor functor(
-          shared.amplitudes, shared.bvalues, shared.sin_inclination, shared.cos_inclination, shared.noise_std, nparam == 3);
-
-      // initial guesses:
-      Eigen::VectorXd x0(nparam);
-      double s0 = 0.0;
-      int N = 0;
-      const float bzero_threshold = File::Config::get_float("BZeroThreshold", DWI::default_bzero_threshold) / 1000.0;
-      for (int i = 0; i < shared.bvalues.size(); ++i) {
-        if (shared.bvalues[i] <= bzero_threshold) {
-          s0 += shared.amplitudes[i];
-          N++;
+      // check the ZSH -> amplitude transform upfront:
+      {
+        auto transform = Math::ZSH::init_amp_transform<default_type>(dirs_azin[shell_index].col(1), lmax[shell_index]);
+        if (!transform.allFinite()) {
+          Exception e("Unable to construct A2SH transformation for shell b=" +
+                      str(static_cast<ssize_t>(std::round((*shells)[shell_index].get_mean()))) + ";");
+          e.push_back("  lmax (" + str(lmax[shell_index]) + ") may be too large for this shell");
+          if (!shell_index && (*shells)[0].is_bzero())
+            e.push_back("  (this appears to be a b=0 shell, and therefore lmax should be set to 0 for this shell)");
+          throw e;
         }
       }
-      x0[0] = (N > 0) ? (s0 / N) : shared.amplitudes.maxCoeff();
 
-      if (nparam == 3) {
-        x0[1] = 2.0;
-        x0[2] = 0.7;
+      auto dirs_cartesian = Math::Sphere::spherical2cartesian(dirs_azin[shell_index]);
+
+      Accumulator::Shared shared(lmax[shell_index], volumes[shell_index], dirs_cartesian);
+      ThreadedLoop(image, 0, 3).run(Accumulator(shared), image, dir_image, mask);
+
+      Eigen::VectorXd rf;
+      // Is this anything other than an isotropic response?
+
+      if (!lmax[shell_index] || use_ols) {
+
+        rf = shared.M.llt().solve(shared.b);
+
       } else {
-        x0[1] = 3.0;
-        x0[2] = 1.0;
-        x0[3] = 0.3;
+        // Generate the constraint matrix
+        // We are going to both constrain the amplitudes to be non-negative, and constrain the derivatives to be
+        // non-negative
+        const size_t num_angles_constraint = 90;
+        Eigen::VectorXd els(num_angles_constraint + 1);
+        for (size_t i = 0; i <= num_angles_constraint; ++i)
+          els[i] = static_cast<default_type>(i) * Math::pi / 180.0;
+        auto amp_transform = Math::ZSH::init_amp_transform<default_type>(els, lmax[shell_index]);
+        auto deriv_transform = Math::ZSH::init_deriv_transform<default_type>(els, lmax[shell_index]);
+
+        Eigen::MatrixXd constraints(amp_transform.rows() + deriv_transform.rows(), amp_transform.cols());
+        constraints.block(0, 0, amp_transform.rows(), amp_transform.cols()) = amp_transform;
+        constraints.block(amp_transform.rows(), 0, deriv_transform.rows(), deriv_transform.cols()) = deriv_transform;
+
+        // Initialise the problem solver
+        auto problem =
+            Math::ICLS::Problem<default_type>(shared.M, constraints, Eigen::VectorXd(), 0, 1e-10, 1e-10, 0, 0.0, true);
+        auto solver = Math::ICLS::Solver<default_type>(problem);
+
+        // Estimate the solution
+        const size_t niter = solver(rf, shared.b);
+        INFO("constrained least-squares solver completed in " + str(niter) + " iterations");
       }
 
-      // optimisation
-      Eigen::LevenbergMarquardt<LMFunctor> lm(functor);
-      Eigen::LevenbergMarquardtSpace::Status status = lm.minimize(x0);
+      CONSOLE("  b=" + str((*shells)[shell_index].get_mean(), 4) + ": [" + str(rf.transpose().cast<float>()) + "]");
 
-      // status message of the levenberg-marquardt solver
-      auto status_message = [](Eigen::LevenbergMarquardtSpace::Status status) -> std::string {
-        switch (status) {
-        case Eigen::LevenbergMarquardtSpace::NotStarted:
-          return "LM solver has not started";
-        case Eigen::LevenbergMarquardtSpace::Running:
-          return "LM solver running...";
-        case Eigen::LevenbergMarquardtSpace::ImproperInputParameters:
-          return "Improper input parameters supplied";
-        case Eigen::LevenbergMarquardtSpace::RelativeReductionTooSmall:
-          return "Converged; Relative reduction too small";
-        case Eigen::LevenbergMarquardtSpace::RelativeErrorTooSmall:
-          return "Converged; Relative error too small ";
-        case Eigen::LevenbergMarquardtSpace::RelativeErrorAndReductionTooSmall:
-          return "Converged; Relative Error and reduction too small";
-        case Eigen::LevenbergMarquardtSpace::CosinusTooSmall:
-          return "Cosine of the gradient is too small";
-        case Eigen::LevenbergMarquardtSpace::TooManyFunctionEvaluation:
-          return "Terminated; Too many function evaluations";
-        case Eigen::LevenbergMarquardtSpace::FtolTooSmall:
-          return "Terminated; ftol too small";
-        case Eigen::LevenbergMarquardtSpace::XtolTooSmall:
-          return "Terminated: xtol too small";
-        case Eigen::LevenbergMarquardtSpace::GtolTooSmall:
-          return "Terminated: gtol too small";
-        default:
-          return "Status Unknown";
-        }
-      };
-      DEBUG("status of LM solver: " + status_message(status));
-
-      INFO("levenberg-marquardt solver completed in " + std::to_string(lm.iter) + " iterations");
-
-      // save se response file, i.e. 'SE ...'
-      responses = x0;
-
-      if (nparam == 3)
-        CONSOLE("SE model paramters [s0, Dapp, alpha]: [" + str(responses.transpose().cast<float>()) + "]");
-      else if (nparam == 4) {
-        CONSOLE("SE model paramaters [s0, Dax, Drad, alpha]: [" + str(responses.transpose().cast<float>()) + "]");
-      }
-
-      std::ofstream file(response_output_path);
-      if (!file.is_open())
-        throw Exception("error writing to " + response_output_path.string());
-
-      file << "SE";
-      for (int i = 0; i < nparam; ++i)
-        file << " " << responses[i];
-      file << "\n";
+      rf.conservativeResizeLike(Eigen::VectorXd::Zero(Math::ZSH::NforL(max_lmax)));
+      responses.row(shell_index) = rf;
     }
+
+    KeyValues keyvals;
+    if (shells) {
+      std::string line = str<int>((*shells)[0].get_mean());
+      for (size_t i = 1; i != (*shells).count(); ++i)
+        line += "," + str<int>((*shells)[i].get_mean());
+      keyvals["Shells"] = line;
+    }
+    File::Matrix::save_matrix(responses, response_output_path, keyvals);
+
+  } else if (use_se) {
+    // *****************************************************************************
+    //                               SE implementation
+    // *****************************************************************************
+
+    CONSOLE(std::string("estimating response function using the stretched exponential from ") + //
+            str(num_voxels) + " voxels");                                                       //
+
+    // response estimation for no shell structure (se):
+    int nparam = (max_lmax == 0) ? 3 : 4;
+
+    DEBUG("gathering signals in selected voxels...");
+
+    SE_Accumulator::SE_Shared shared(max_lmax, DWI::get_DW_scheme(header), header, grad_dev, noise_map);
+
+    ThreadedLoop(image, 0, 3).run(SE_Accumulator(shared), image, dir_image, mask);
+
+    const int num_volumes = shared.dirs.rows();
+    Eigen::VectorXd noise_std(num_voxels * num_volumes);
+    for (int i = 0; i < num_voxels; ++i) {
+      for (size_t j = 0; j != num_volumes; ++j) {
+        noise_std[i * num_volumes + j] = shared.pervoxel_noise[i];
+      }
+    }
+
+    assert(shared.amplitudes.size() == shared.bvalues.size() &&
+           shared.amplitudes.size() == shared.sin_inclination.size() && shared.amplitudes.size() == noise_std.size());
+
+    DEBUG("fitting parameters of stretched exponential model to signals...");
+
+    // File::Matrix::save_vector(shared.amplitudes, "amplitudes.txt");
+    const std::string response_stem = response_output_path.stem().string();
+    const std::string tissue_name = response_stem.rfind("response_", 0) == 0 ? response_stem.substr(9) : response_stem;
+    const auto noise_output_path =
+        response_output_path.parent_path() / ("noise_" + tissue_name + response_output_path.extension().string());
+    File::Matrix::save_vector(shared.pervoxel_noise, noise_output_path);
+
+    // levenberg-marquart solver:
+    LMFunctor functor(
+        shared.amplitudes, shared.bvalues, shared.sin_inclination, shared.cos_inclination, noise_std, nparam == 3);
+
+    // initial guesses:
+    Eigen::VectorXd responses(nparam);
+    double s0 = 0.0;
+    int N = 0;
+    const float bzero_threshold = File::Config::get_float("BZeroThreshold", DWI::default_bzero_threshold) / 1000.0;
+    for (int i = 0; i < shared.bvalues.size(); ++i) {
+      if (shared.bvalues[i] <= bzero_threshold) {
+        s0 += shared.amplitudes[i];
+        N++;
+      }
+    }
+    responses[0] = (N > 0) ? std::log(s0 / N) : std::log(shared.amplitudes.maxCoeff());
+
+    if (nparam == 3) {
+      responses[1] = std::log(2.0);
+      responses[2] = std::log(0.7);
+    } else {
+      responses[1] = std::log(3.0);
+      responses[2] = std::log(1.0);
+      responses[3] = std::log(0.3);
+    }
+
+    // optimisation
+    Eigen::LevenbergMarquardt<LMFunctor> lm(functor);
+    Eigen::LevenbergMarquardtSpace::Status status = lm.minimize(responses);
+
+    // status message of the levenberg-marquardt solver
+    auto status_message = [](Eigen::LevenbergMarquardtSpace::Status status) -> std::string {
+      switch (status) {
+      case Eigen::LevenbergMarquardtSpace::NotStarted:
+        return "LM solver has not started";
+      case Eigen::LevenbergMarquardtSpace::Running:
+        return "LM solver running...";
+      case Eigen::LevenbergMarquardtSpace::ImproperInputParameters:
+        return "Improper input parameters supplied";
+      case Eigen::LevenbergMarquardtSpace::RelativeReductionTooSmall:
+        return "Converged; Relative reduction too small";
+      case Eigen::LevenbergMarquardtSpace::RelativeErrorTooSmall:
+        return "Converged; Relative error too small ";
+      case Eigen::LevenbergMarquardtSpace::RelativeErrorAndReductionTooSmall:
+        return "Converged; Relative Error and reduction too small";
+      case Eigen::LevenbergMarquardtSpace::CosinusTooSmall:
+        return "Cosine of the gradient is too small";
+      case Eigen::LevenbergMarquardtSpace::TooManyFunctionEvaluation:
+        return "Terminated; Too many function evaluations";
+      case Eigen::LevenbergMarquardtSpace::FtolTooSmall:
+        return "Terminated; ftol too small";
+      case Eigen::LevenbergMarquardtSpace::XtolTooSmall:
+        return "Terminated: xtol too small";
+      case Eigen::LevenbergMarquardtSpace::GtolTooSmall:
+        return "Terminated: gtol too small";
+      default:
+        return "Status Unknown";
+      }
+    };
+
+    DEBUG("status of LM solver: " + status_message(status));
+
+    INFO("levenberg-marquardt solver completed in " + std::to_string(lm.iter) + " iterations");
+
+    // convert the parameters back to the original space:
+    for (int i = 0; i < responses.size()-1;++i){
+      responses[i]=std::exp(responses[i]);
+    }
+    responses[nparam-1] = 1.0 / (1.0 + std::exp(-responses[nparam-1]));
+
+    // save se response file, i.e. 'SE ...'
+    if (responses.size() == 3) {
+      CONSOLE("SE model paramters [s0, Dapp, alpha]: [" + str(responses.transpose()) + "]");
+    } else if (responses.size() == 4) {
+      CONSOLE("SE model paramaters [s0, Dax, Drad, alpha]: [" + str(responses.transpose()) + "]");
+    }
+
+    std::ofstream file(response_output_path);
+    if (!file.is_open())
+      throw Exception("error writing to " + response_output_path.string());
+
+    file << "SE";
+    for (int i = 0; i < responses.size(); ++i)
+      file << " " << responses[i];
+    file << "\n";
+  }
 }

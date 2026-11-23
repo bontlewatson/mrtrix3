@@ -32,10 +32,11 @@ namespace MR::DWI {
       // compute the L tensor from grad_dev image at a voxel pos
       void compute_L(Eigen::Matrix3d &L, const Eigen::Vector3i &vox) {
         // assuming L(x) stored as [Lxx, Lxy, Lxz, Lyx, Lyy, Lyz, Lzx, Lzy, Lzz]
-
-        reslicer.index(0) = vox[0];
+        
+        /* reslicer.index(0) = vox[0];
         reslicer.index(1) = vox[1];
-        reslicer.index(2) = vox[2];
+        reslicer.index(2) = vox[2]*/
+        assign_pos_of(vox).to(reslicer);
 
         reslicer.index(3) = 0;
         for (int i = 0; i < 3; ++i) {
